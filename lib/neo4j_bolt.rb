@@ -5,6 +5,7 @@ require 'json'
 module Neo4jBolt
     NEO4J_DEBUG = 0
     class Error < StandardError; end
+    class ErrorIntegerOutOfRange < Error; end
 
     class CypherError < StandardError
         def initialize(message, buf = nil)
@@ -312,7 +313,7 @@ module Neo4jBolt
                     append_uint8(0xCB)
                     append_int64(v)
                 else
-                    raise "int is too big"
+                    raise Neo4jBolt::ErrorIntegerOutOfRange.new()
                 end
             elsif v.is_a? Float
                 append_uint8(0xC1)
@@ -604,20 +605,19 @@ module Neo4jBolt
             begin
                 yield
             rescue
+                @transaction_failed = true
                 raise
-                if @transaction == 1
+            ensure
+                @transaction -= 1
+                if @transaction == 0 && @transaction_failed
                     # TODO: Not sure about this, read remaining response but don't block
-                    read_response()
-                    STDERR.puts "!!! Rolling back transaction !!!"
+                    # read_response()
+                    # STDERR.puts "!!! Rolling back transaction !!!"
                     append_uint8(0xb1)
                     append_uint8(BOLT_ROLLBACK)
                     flush()
                     read_response()
-                    @transaction_failed = true
                 end
-                raise
-            ensure
-                @transaction -= 1
             end
             if (@transaction == 0) && (!@transaction_failed)
                 append_uint8(0xb1)
@@ -636,12 +636,22 @@ module Neo4jBolt
                 STDERR.puts '-' * 40
             end
             transaction do
+                # TODO: Write data to PackStream buffer before doing
+                # anything to catch errors like int out of range etc.
+                # BEFORE sending the query to Neo4j
+                # On the other hand, this is exactly what happens:
+                # we fill the buffer before sending anything
                 append_uint8(0xb1)
                 # STDERR.puts "BOLT_RUN"
                 append_uint8(BOLT_RUN)
                 append_s(query)
                 # STDERR.puts "Running query with JSON data (#{data.to_json.size} bytes)"
-                append_dict(data)
+                begin
+                    append_dict(data)
+                rescue
+                    @buffer = []
+                    raise
+                end
                 append_dict({}) # options
                 flush()
                 keys = []
