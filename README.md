@@ -1,8 +1,16 @@
 # Neo4jBolt
 
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/neo4j_bolt`. To experiment with that code, run `bin/console` for an interactive prompt.
+A Neo4j/Bolt driver written in pure Ruby.
 
-TODO: Delete this and the text above, and describe your gem
+🚀 **Streaming support!** Neo4j sends responses in chunks of max. 64 kb. When running queries, specify a block to obtain rows as soon as they arrive.
+
+## Supported and unsupported aspects
+
+|  | Supported | Unsupported |
+|-|-|-
+| Neo4j | 4.4 | 1.x 2.x 3.x <br /> 4.0 4.1 4.2 4.3 <br /> 5.x |
+| Bolt | 4.4 | 1 2 3 4.0 4.1 4.2 4.3 |
+
 
 ## Installation
 
@@ -32,5 +40,5 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/neo4j_bolt.
+Bug reports and pull requests are welcome on GitHub at https://github.com/specht/neo4j_bolt.
 
