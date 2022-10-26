@@ -636,16 +636,14 @@ module Neo4jBolt
                 STDERR.puts '-' * 40
             end
             transaction do
-                # TODO: Write data to PackStream buffer before doing
-                # anything to catch errors like int out of range etc.
-                # BEFORE sending the query to Neo4j
-                # On the other hand, this is exactly what happens:
-                # we fill the buffer before sending anything
                 append_uint8(0xb1)
-                # STDERR.puts "BOLT_RUN"
                 append_uint8(BOLT_RUN)
                 append_s(query)
-                # STDERR.puts "Running query with JSON data (#{data.to_json.size} bytes)"
+                # Because something might go wrong while filling the buffer with
+                # the request data (for example if the data contains 2^100 anywhere)
+                # we catch any errors that happen here and if things go wrong, we
+                # clear the buffer so that the BOLT_RUN stanza never gets sent
+                # to Neo4j - instead, the transaction gets rolled back
                 begin
                     append_dict(data)
                 rescue
