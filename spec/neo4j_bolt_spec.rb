@@ -90,6 +90,55 @@ RSpec.describe Neo4jBolt do
         end
     end
 
+    it 'correctly transports 64 bit floats' do
+        [
+            1.0, Math::PI, Float::INFINITY, -Float::INFINITY,
+            Math::sqrt(2.0)
+        ].each do |f|
+            expect($neo4j.neo4j_query_expect_one("RETURN $f;", {:f => f})['$f']).to eq f
+        end
+    end
+
+    it 'correctly transports dictionaries' do
+        [
+            {},
+            {a: {b: {}}},
+            {a: {b: {c: {d: {}}}}},
+            {hey: 1, yes: 2, no: 'of course'},
+            {chars: ['A', 'B', 'C', {well: 'no', then: {}}], digits: [1, 2, 3], nothing: nil},
+        ].each do |x|
+            expect($neo4j.neo4j_query_expect_one("RETURN $x;", {:x => x})['$x']).to eq x
+        end
+    end
+
+    it 'correctly transports arrays' do
+        [
+            [],
+            [1],
+            [nil],
+            [1, 2, 3, 4, 5, 6],
+            [[[[[[[]]]]]]],
+            [[],[],[],[]],
+            [1, [2, [3, [4, [5, [6]]]]]]
+        ].each do |x|
+            expect($neo4j.neo4j_query_expect_one("RETURN $x;", {:x => x})['$x']).to eq x
+        end
+    end
+
+    it 'correctly runs a correct query' do
+        expect do
+            $neo4j.neo4j_query_expect_one("MATCH (n) RETURN COUNT(n) AS n;")
+        end.to_not raise_error
+    end
+
+    it 'raises error on Cypher syntax error' do
+        expect do
+            $neo4j.transaction do
+                $neo4j.neo4j_query_expect_one("SMUDGE (n) RETURN COUNT(n) AS n;")
+            end
+        end.to raise_error Neo4jBolt::SyntaxError
+    end
+
     it 'correctly yields strings to 1 MB' do
         [
             '', 'a', 'ab', 'abc',

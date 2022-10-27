@@ -5,7 +5,8 @@ require 'json'
 module Neo4jBolt
     NEO4J_DEBUG = 0
     class Error < StandardError; end
-    class ErrorIntegerOutOfRange < Error; end
+    class IntegerOutOfRangeError < Error; end
+    class SyntaxError < Error; end
 
     class CypherError < StandardError
         def initialize(message, buf = nil)
@@ -182,7 +183,7 @@ module Neo4jBolt
         def initialize(id, labels, properties)
             @id = id
             @labels = labels
-            properties.each_pair { |k, v| self[k.to_sym] = v }
+            properties.each_pair { |k, v| self[k] = v }
         end
         attr_reader :id, :labels
     end
@@ -193,7 +194,7 @@ module Neo4jBolt
             @start_node_id = start_node_id
             @end_node_id = end_node_id
             @type = type
-            properties.each_pair { |k, v| self[k.to_sym] = v }
+            properties.each_pair { |k, v| self[k] = v }
         end
 
         attr_reader :id, :start_node_id, :end_node_id, :type
@@ -313,7 +314,7 @@ module Neo4jBolt
                     append_uint8(0xCB)
                     append_int64(v)
                 else
-                    raise Neo4jBolt::ErrorIntegerOutOfRange.new()
+                    raise Neo4jBolt::IntegerOutOfRangeError.new()
                 end
             elsif v.is_a? Float
                 append_uint8(0xC1)
@@ -516,6 +517,14 @@ module Neo4jBolt
             end
         end
 
+        def bolt_error(code, message)
+            if code == 'Neo.ClientError.Statement.SyntaxError'
+                SyntaxError.new(message)
+            else
+                Error.new("#{code}\n#{message}")
+            end
+        end
+
         def read_response(&block)
             # loop do
             #     part = []
@@ -540,7 +549,12 @@ module Neo4jBolt
                 response_dict = parse(buffer)
                 buffer.flush()
                 if response_dict[:marker] == BOLT_FAILURE
-                    raise "Bolt error: #{response_dict[:data]['code']}\n#{response_dict[:data]['message']}"
+                    STDERR.puts "RESETTING CONNECTION"
+                    append_uint8(0xb1)
+                    append_uint8(BOLT_RESET)
+                    flush()
+                    read_response()
+                    raise bolt_error(response_dict[:data]['code'], response_dict[:data]['message'])
                 end
                 # STDERR.puts response_dict.to_json
                 yield response_dict if block_given?
@@ -612,7 +626,7 @@ module Neo4jBolt
                 if @transaction == 0 && @transaction_failed
                     # TODO: Not sure about this, read remaining response but don't block
                     # read_response()
-                    # STDERR.puts "!!! Rolling back transaction !!!"
+                    STDERR.puts "!!! Rolling back transaction !!!"
                     append_uint8(0xb1)
                     append_uint8(BOLT_ROLLBACK)
                     flush()
@@ -626,6 +640,22 @@ module Neo4jBolt
                 read_response()
                 @transaction = 0
                 @transaction_failed = false
+            end
+        end
+
+        def fix_value(value)
+            if value.is_a? Hash
+                if value[:marker] == BOLT_NODE
+                    Node.new(value[:id], value[:labels], fix_value(value[:properties]))
+                elsif value[:marker] == BOLT_RELATIONSHIP
+                    Relationship.new(value[:id], value[:start_node_id], value[:end_node_id], value[:type], fix_value(value[:properties]))
+                else
+                    Hash[value.map { |k, v| [k.to_sym, fix_value(v)] }]
+                end
+            elsif value.is_a? Array
+                value.map { |v| fix_value(v) }
+            else
+                value
             end
         end
 
@@ -666,30 +696,7 @@ module Neo4jBolt
                     if data[:marker] == BOLT_RECORD
                         entry = {}
                         keys.each.with_index do |key, i|
-                            value = data[:data][i]
-                            if value.is_a? Hash
-                                if value[:marker] == BOLT_NODE
-                                    value = Node.new(value[:id], value[:labels], value[:properties])
-                                elsif value[:marker] == BOLT_RELATIONSHIP
-                                    value = Relationship.new(value[:id], value[:start_node_id], value[:end_node_id], value[:type], value[:properties])
-                                else
-                                    value = Hash[value.map { |k, v| [k.to_sym, v] }]
-                                end
-                            elsif value.is_a? Array
-                                value.map! do |v2|
-                                    if v2.is_a? Hash
-                                        if v2[:marker] == BOLT_NODE
-                                            v2 = Node.new(v2[:id], v2[:labels], v2[:properties])
-                                        elsif v2[:marker] == BOLT_RELATIONSHIP
-                                            v2 = Relationship.new(v2[:id], v2[:start_node_id], v2[:end_node_id], v2[:type], v2[:properties])
-                                        else
-                                            v2 = Hash[v2.map { |k, v| [k.to_sym, v] }]
-                                        end
-                                    end
-                                    v2
-                                end
-                            end
-                            entry[key] = value
+                            entry[key] = fix_value(data[:data][i])
                         end
                         if NEO4J_DEBUG >= 1
                             STDERR.puts ">>> #{entry.to_json}"
