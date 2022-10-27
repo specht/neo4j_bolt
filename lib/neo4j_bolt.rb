@@ -5,10 +5,6 @@ require 'yaml'
 
 module Neo4jBolt
     NEO4J_DEBUG = 0
-    class Error < StandardError; end
-    class IntegerOutOfRangeError < Error; end
-    class SyntaxError < Error; end
-    class ExpectedOneResultError < Error; end
 
     module ServerState
         DISCONNECTED = 0
@@ -20,8 +16,40 @@ module Neo4jBolt
         TX_STREAMING = 6
         FAILED       = 7
         INTERRUPTED  = 8
-        STATE_LABELS = %w(DISCONNECTED CONNECTED DEFUNCT READY STREAMING
-                          TX_READY TX_STREAMING FAILED INTERRUPTED)
+    end
+    SERVER_STATE_LABELS = Hash[ServerState::constants.map { |value| [ServerState::const_get(value), value] }]
+
+    module BoltMarker
+        BOLT_HELLO        = 0x01
+        BOLT_GOODBYE      = 0x02
+        BOLT_RESET        = 0x0F
+        BOLT_RUN          = 0x10
+        BOLT_BEGIN        = 0x11
+        BOLT_COMMIT       = 0x12
+        BOLT_ROLLBACK     = 0x13
+        BOLT_DISCARD      = 0x2F
+        BOLT_PULL         = 0x3F
+        BOLT_NODE         = 0x4E
+        BOLT_RELATIONSHIP = 0x52
+        BOLT_SUCCESS      = 0x70
+        BOLT_RECORD       = 0x71
+        BOLT_IGNORED      = 0x7E
+        BOLT_FAILURE      = 0x7F
+    end
+    BOLT_MAKER_LABELS = Hash[BoltMarker::constants.map { |value| [BoltMarker::const_get(value), value] }]
+
+    class Error < StandardError; end
+    class IntegerOutOfRangeError < Error; end
+    class SyntaxError < Error; end
+    class ExpectedOneResultError < Error; end
+    class UnexpectedServerResponse < Error
+        def initialize(token)
+            @token = token
+        end
+
+        def to_s
+            BOLT_MAKER_LABELS[@token]
+        end
     end
 
     class State
@@ -32,15 +60,15 @@ module Neo4jBolt
 
         def set(state)
             @state = state
-            # STDERR.puts "Server state = #{ServerState::STATE_LABELS[@state]}"
+            # STDERR.puts " > #{SERVER_STATE_LABELS[@state]}"
         end
 
         def ==(other)
             @state == other
         end
 
-        def to_s
-            "#{ServerState::STATE_LABELS[@state] || @state}"
+        def to_i
+            @state
         end
     end
 
@@ -238,22 +266,6 @@ module Neo4jBolt
 
     class BoltSocket
 
-        BOLT_HELLO        = 0x01
-        BOLT_GOODBYE      = 0x02
-        BOLT_RESET        = 0x0F
-        BOLT_RUN          = 0x10
-        BOLT_BEGIN        = 0x11
-        BOLT_COMMIT       = 0x12
-        BOLT_ROLLBACK     = 0x13
-        BOLT_DISCARD      = 0x2F
-        BOLT_PULL         = 0x3F
-        BOLT_NODE         = 0x4E
-        BOLT_RELATIONSHIP = 0x52
-        BOLT_SUCCESS      = 0x70
-        BOLT_RECORD       = 0x71
-        BOLT_IGNORED      = 0x7E
-        BOLT_FAILURE      = 0x7F
-
         def initialize(host = 'localhost', port = 7687)
             @host = host
             @port = port
@@ -261,6 +273,7 @@ module Neo4jBolt
             @transaction = 0
             @transaction_failed = false
             @state = State.new()
+            @neo4j_version = nil
         end
 
         def assert(condition)
@@ -273,6 +286,11 @@ module Neo4jBolt
 
         def append_uint8(i)
             _append([i].pack('C'))
+        end
+
+        def append_token(i)
+            # STDERR.puts BOLT_MAKER_LABELS[i]
+            append_uint8(i)
         end
 
         def append_uint16(i)
@@ -495,24 +513,24 @@ module Neo4jBolt
 
                 response = {}
 
-                if marker == BOLT_SUCCESS
-                    response = {:marker => BOLT_SUCCESS, :data => parse(buf)}
-                elsif marker == BOLT_FAILURE
-                    response = {:marker => BOLT_FAILURE, :data => parse(buf)}
-                elsif marker == BOLT_IGNORED
-                    response = {:marker => BOLT_IGNORED}
-                elsif marker == BOLT_RECORD
-                    response = {:marker => BOLT_RECORD, :data => parse(buf)}
-                elsif marker == BOLT_NODE
+                if marker == BoltMarker::BOLT_SUCCESS
+                    response = {:marker => BoltMarker::BOLT_SUCCESS, :data => parse(buf)}
+                elsif marker == BoltMarker::BOLT_FAILURE
+                    response = {:marker => BoltMarker::BOLT_FAILURE, :data => parse(buf)}
+                elsif marker == BoltMarker::BOLT_IGNORED
+                    response = {:marker => BoltMarker::BOLT_IGNORED}
+                elsif marker == BoltMarker::BOLT_RECORD
+                    response = {:marker => BoltMarker::BOLT_RECORD, :data => parse(buf)}
+                elsif marker == BoltMarker::BOLT_NODE
                     response = {
-                        :marker => BOLT_NODE,
+                        :marker => BoltMarker::BOLT_NODE,
                         :id => parse(buf),
                         :labels => parse(buf),
                         :properties => parse(buf),
                     }
-                elsif marker == BOLT_RELATIONSHIP
+                elsif marker == BoltMarker::BOLT_RELATIONSHIP
                     response = {
-                        :marker => BOLT_RELATIONSHIP,
+                        :marker => BoltMarker::BOLT_RELATIONSHIP,
                         :id => parse(buf),
                         :start_node_id => parse(buf),
                         :end_node_id => parse(buf),
@@ -567,32 +585,14 @@ module Neo4jBolt
         end
 
         def read_response(&block)
-            # loop do
-            #     part = []
-            #     loop do
-            #         length = @socket.read(2).unpack('n').first
-            #         break if length == 0
-            #         chunk = @socket.read(length).unpack('C*')
-            #         part += chunk
-            #     end
-            #     buffer = BoltBuffer.new(part)
-            #     # buffer.dump
-            #     response_dict = parse(buffer)
-            #     if response_dict[:marker] == BOLT_FAILURE
-            #         raise "Bolt error: #{response_dict[:data]['code']}\n#{response_dict[:data]['message']}"
-            #     end
-            #     yield response_dict if block_given?
-            #     break if [BOLT_SUCCESS, BOLT_FAILURE, BOLT_IGNORED].include?(response_dict[:marker])
-            # end
-            # nil
             loop do
                 buffer = BoltBuffer.new(@socket)
                 response_dict = parse(buffer)
                 buffer.flush()
-                if response_dict[:marker] == BOLT_FAILURE
+                if response_dict[:marker] == BoltMarker::BOLT_FAILURE
                     # STDERR.puts "RESETTING CONNECTION"
                     append_uint8(0xb1)
-                    append_uint8(BOLT_RESET)
+                    append_token(BoltMarker::BOLT_RESET)
                     flush()
                     @state.set(ServerState::READY)
                     read_response()
@@ -601,7 +601,7 @@ module Neo4jBolt
                 end
                 # STDERR.puts response_dict.to_json
                 yield response_dict if block_given?
-                break if [BOLT_SUCCESS, BOLT_FAILURE, BOLT_IGNORED].include?(response_dict[:marker])
+                break if [BoltMarker::BOLT_SUCCESS, BoltMarker::BOLT_FAILURE, BoltMarker::BOLT_IGNORED].include?(response_dict[:marker])
             end
         end
 
@@ -631,15 +631,17 @@ module Neo4jBolt
                 :user_agent => 'qts/0.1'
             }
             append_uint8(0xb1)
-            append_uint8(BOLT_HELLO)
+            append_token(BoltMarker::BOLT_HELLO)
             append_dict(data)
             flush()
             read_response() do |data|
-                if data[:marker] == BOLT_SUCCESS
+                if data[:marker] == BoltMarker::BOLT_SUCCESS
                     @state.set(ServerState::READY)
                     @neo4j_version = data[:data]['server']
-                else
+                elsif data[:marker] == BoltMarker::BOLT_FAILURE
                     @state.set(ServerState::DEFUNCT)
+                else
+                    raise UnexpectedServerResponse.new(data[:marker])
                 end
             end
 
@@ -649,7 +651,7 @@ module Neo4jBolt
 
         def disconnect()
             append_uint8(0xb1)
-            append_uint8(BOLT_GOODBYE)
+            append_token(BOLT_GOODBYE)
             flush()
             @state.set(ServerState::DEFUNCT)
         end
@@ -657,15 +659,22 @@ module Neo4jBolt
         def transaction(&block)
             connect() if @socket.nil?
             if @transaction == 0
-                STDERR.puts @state
+                # STDERR.puts '*' * 40
+                # STDERR.puts "#{SERVER_STATE_LABELS[@state.to_i]} (#{@state.to_i})"
+                # STDERR.puts '*' * 40
                 assert(@state == ServerState::READY)
                 append_uint8(0xb1)
-                append_uint8(BOLT_BEGIN)
+                append_token(BoltMarker::BOLT_BEGIN)
                 append_dict({})
                 flush()
-                read_response()
-                @state.set(ServerState::TX_READY)
-                @transaction_failed = false
+                read_response() do |data|
+                    if data[:marker] == BoltMarker::BOLT_SUCCESS
+                        @state.set(ServerState::TX_READY)
+                        @transaction_failed = false
+                    elsif data[:marker] == BoltMarker::BOLT_FAILURE
+                        @state.set(ServerState::FAILED)
+                    end
+                end
             end
             @transaction += 1
             begin
@@ -680,7 +689,7 @@ module Neo4jBolt
                     # read_response()
                     # STDERR.puts "!!! Rolling back transaction !!!"
                     append_uint8(0xb1)
-                    append_uint8(BOLT_ROLLBACK)
+                    append_token(BoltMarker::BOLT_ROLLBACK)
                     flush()
                     read_response()
                     @state.set(ServerState::READY)
@@ -688,7 +697,7 @@ module Neo4jBolt
             end
             if (@transaction == 0) && (!@transaction_failed)
                 append_uint8(0xb1)
-                append_uint8(BOLT_COMMIT)
+                append_token(BoltMarker::BOLT_COMMIT)
                 flush()
                 read_response()
                 @transaction = 0
@@ -699,9 +708,9 @@ module Neo4jBolt
 
         def fix_value(value)
             if value.is_a? Hash
-                if value[:marker] == BOLT_NODE
+                if value[:marker] == BoltMarker::BOLT_NODE
                     Node.new(value[:id], value[:labels], fix_value(value[:properties]))
-                elsif value[:marker] == BOLT_RELATIONSHIP
+                elsif value[:marker] == BoltMarker::BOLT_RELATIONSHIP
                     Relationship.new(value[:id], value[:start_node_id], value[:end_node_id], value[:type], fix_value(value[:properties]))
                 else
                     Hash[value.map { |k, v| [k.to_sym, fix_value(v)] }]
@@ -720,9 +729,9 @@ module Neo4jBolt
                 STDERR.puts '-' * 40
             end
             transaction do
-                assert(@state == ServerState::TX_READY || @state == ServerState::TX_STREAMING)
+                assert(@state == ServerState::TX_READY || @state == ServerState::TX_STREAMING || @state == ServerState::FAILED)
                 append_uint8(0xb1)
-                append_uint8(BOLT_RUN)
+                append_token(BoltMarker::BOLT_RUN)
                 append_s(query)
                 # Because something might go wrong while filling the buffer with
                 # the request data (for example if the data contains 2^100 anywhere)
@@ -737,29 +746,35 @@ module Neo4jBolt
                 end
                 append_dict({}) # options
                 flush()
-                @state.set(ServerState::TX_STREAMING)
-                keys = []
                 read_response do |data|
-                    keys = (data[:data]['fields'] || {})
-                end
-
-                assert(@state == ServerState::TX_STREAMING)
-                append_uint8(0xb1)
-                # STDERR.puts "BOLT_PULL"
-                append_uint8(BOLT_PULL)
-                append_dict({:n => -1})
-                flush()
-                read_response do |data|
-                    if data[:marker] == BOLT_RECORD
-                        entry = {}
-                        keys.each.with_index do |key, i|
-                            entry[key] = fix_value(data[:data][i])
+                    if data[:marker] == BoltMarker::BOLT_SUCCESS
+                        @state.set(ServerState::TX_STREAMING)
+                        keys = data[:data]['fields']
+                        assert(@state == ServerState::TX_STREAMING)
+                        append_uint8(0xb1)
+                        append_token(BoltMarker::BOLT_PULL)
+                        append_dict({:n => -1})
+                        flush()
+                        read_response do |data|
+                            if data[:marker] == BoltMarker::BOLT_RECORD
+                                entry = {}
+                                keys.each.with_index do |key, i|
+                                    entry[key] = fix_value(data[:data][i])
+                                end
+                                if NEO4J_DEBUG >= 1
+                                    STDERR.puts ">>> #{entry.to_json}"
+                                    STDERR.puts '-' * 40
+                                end
+                                yield entry
+                            elsif data[:marker] == BoltMarker::BOLT_SUCCESS
+                                # STDERR.puts data.to_yaml
+                                @state.set(ServerState::TX_READY)
+                            end
                         end
-                        if NEO4J_DEBUG >= 1
-                            STDERR.puts ">>> #{entry.to_json}"
-                            STDERR.puts '-' * 40
-                        end
-                        yield entry
+                    elsif data[:marker] == BoltMarker::BOLT_FAILURE
+                        @state.set(ServerState::FAILED)
+                    else
+                        raise UnexpectedServerResponse.new(data[:marker])
                     end
                 end
             end

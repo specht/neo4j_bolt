@@ -1,39 +1,48 @@
 require 'socket'
 require 'json'
 
+GOT_NEO4J = ['localhost', 7687]
+# GOT_NEO4J = nil
+
 RSpec.describe Neo4jBolt do
     include Neo4jBolt
     before :all do
-        STDERR.puts "Launching Neo4j!"
-        @thread = Thread.new do
-            system("docker run --rm --name neo4j_bolt_rspec --publish-all --env NEO4J_AUTH=none neo4j:4.4-community")
-        end
-        loop do
-            sleep 1
-            begin
-                inspect = JSON.parse(`docker inspect neo4j_bolt_rspec`)
-                if inspect.size > 0
-                    port = inspect.first['NetworkSettings']['Ports']['7687/tcp'].first['HostPort'].to_i
-                    socket = TCPSocket.open('localhost', port)
-                    socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-                    socket.write("\x60\x60\xB0\x17")
-                    socket.write("\x00\x00\x00\x00")
-                    socket.write("\x00\x00\x00\x00")
-                    socket.write("\x00\x00\x00\x00")
-                    socket.write("\x00\x00\x00\x00")
-                    version = socket.read(4).unpack('N').first
-                    STDERR.puts "Connection established!"
-                    connect_bolt_socket('localhost', port)
-                    break
+        if GOT_NEO4J
+            connect_bolt_socket(GOT_NEO4J[0], GOT_NEO4J[1])
+        else
+            STDERR.puts "Launching Neo4j!"
+            @thread = Thread.new do
+                system("docker run --rm --name neo4j_bolt_rspec --publish-all --env NEO4J_AUTH=none neo4j:4.4-community")
+            end
+            loop do
+                sleep 1
+                begin
+                    inspect = JSON.parse(`docker inspect neo4j_bolt_rspec`)
+                    if inspect.size > 0
+                        port = inspect.first['NetworkSettings']['Ports']['7687/tcp'].first['HostPort'].to_i
+                        socket = TCPSocket.open('localhost', port)
+                        socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+                        socket.write("\x60\x60\xB0\x17")
+                        socket.write("\x00\x00\x00\x00")
+                        socket.write("\x00\x00\x00\x00")
+                        socket.write("\x00\x00\x00\x00")
+                        socket.write("\x00\x00\x00\x00")
+                        version = socket.read(4).unpack('N').first
+                        STDERR.puts "Connection established!"
+                        connect_bolt_socket('localhost', port)
+                        break
+                    end
+                rescue Errno::ECONNREFUSED, Errno::EPIPE, Errno::ECONNRESET
                 end
-            rescue Errno::ECONNREFUSED, Errno::EPIPE, Errno::ECONNRESET
             end
         end
     end
 
     after :all do
-        @thread.kill
-        system("docker kill neo4j_bolt_rspec")
+        unless GOT_NEO4J
+            @thread.kill
+            system("docker kill neo4j_bolt_rspec")
+        end
     end
 
     it 'has a version number' do
