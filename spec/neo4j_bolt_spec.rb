@@ -15,7 +15,8 @@ RSpec.describe Neo4jBolt do
 
     before :all do
         if GOT_NEO4J
-            connect_bolt_socket(GOT_NEO4J[0], GOT_NEO4J[1])
+            Neo4jBolt.bolt_host = GOT_NEO4J[0]
+            Neo4jBolt.bolt_port = GOT_NEO4J[1]
         else
             STDERR.puts "Launching Neo4j!"
             @thread = Thread.new do
@@ -36,7 +37,8 @@ RSpec.describe Neo4jBolt do
                         socket.write("\x00\x00\x00\x00")
                         version = socket.read(4).unpack('N').first
                         STDERR.puts "Connection established!"
-                        connect_bolt_socket('localhost', port)
+                        Neo4jBolt.bolt_host = 'localhost'
+                        Neo4jBolt.bolt_port = port
                         break
                     end
                 rescue Errno::ECONNREFUSED, Errno::EPIPE, Errno::ECONNRESET

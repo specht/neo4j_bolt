@@ -1,16 +1,6 @@
 # Neo4jBolt
 
-A Neo4j/Bolt driver written in pure Ruby.
-
-🚀 **Streaming support!** Neo4j sends responses in chunks of max. 64 kb. When running queries, specify a block to obtain rows as soon as they arrive.
-
-## Supported and unsupported aspects
-
-|  | Supported | Unsupported |
-|-|-|-
-| Neo4j | 4.4 | 1.x 2.x 3.x <br /> 4.0 4.1 4.2 4.3 <br /> 5.x |
-| Bolt | 4.4 | 1 2 3 4.0 4.1 4.2 4.3 |
-
+A Neo4j/Bolt driver written in pure Ruby. Currently only supporting Neo4j 4.4.
 
 ## Installation
 
@@ -38,10 +28,11 @@ docker run --rm --env NEO4J_AUTH=none --publish 7687:7687 neo4j:4.4-community
 
 ### Connecting to a Neo4j database
 
-Use the `connect_bolt_socket` method to connect to a Neo4j server:
+Specify your Bolt host and port (if you omit this it will be localhost:7687 by default):
 
 ```ruby
-connect_bolt_socket('localhost', 7687)
+Neo4jBolt.bolt_host = 'localhost'
+Neo4jBolt.bolt_port = 7687
 ```
 
 Use `cleanup_neo4j` to disconnect (this is important when running a web app – it might be a good idea to close a socket once we're done with it so we don't run out of ports).

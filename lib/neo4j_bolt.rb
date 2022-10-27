@@ -4,6 +4,12 @@ require 'json'
 require 'yaml'
 
 module Neo4jBolt
+    class << self
+        attr_accessor :bolt_host, :bolt_port
+    end
+    self.bolt_host = 'localhost'
+    self.bolt_port = 7687
+
     NEO4J_DEBUG = 0
 
     module ServerState
@@ -266,9 +272,7 @@ module Neo4jBolt
 
     class BoltSocket
 
-        def initialize(host = 'localhost', port = 7687)
-            @host = host
-            @port = port
+        def initialize()
             @socket = nil
             @transaction = 0
             @transaction_failed = false
@@ -607,7 +611,7 @@ module Neo4jBolt
 
         def connect()
             # STDERR.write "Connecting to Neo4j via Bolt..."
-            @socket = TCPSocket.new(@host, @port)
+            @socket = TCPSocket.new(Neo4jBolt.bolt_host, Neo4jBolt.bolt_port)
             # @socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_KEEPALIVE, true)
             # @socket.setsockopt(Socket::SOL_TCP, Socket::TCP_KEEPIDLE, 50)
             # @socket.setsockopt(Socket::SOL_TCP, Socket::TCP_KEEPINTVL, 10)
@@ -809,10 +813,6 @@ module Neo4jBolt
             end
             rows.first
         end
-    end
-
-    def connect_bolt_socket(host, port)
-        @bolt_socket ||= BoltSocket.new(host, port)
     end
 
     def transaction(&block)
