@@ -36,23 +36,46 @@ In order to use this gem, you need a running Neo4j database. You can start one u
 docker run --rm --env NEO4J_AUTH=none --publish 7687:7687 neo4j:4.4-community
 ```
 
+### Connecting to a Neo4j database
+
+Use the `connect_bolt_socket` method to connect to a Neo4j server:
+
+```ruby
+connect_bolt_socket('localhost', 7687)
+```
+
+Use `cleanup_neo4j` to disconnect (this is important when running a web app – it might be a good idea to close a socket once we're done with it so we don't run out of ports).
+
+
 ### Running queries
 
 Use `neo4j_query` to run a query and receive all results:
 
 ```ruby
-entries = neo4j_query("MATCH (n) RETURN n")
+entries = neo4j_query("MATCH (n) RETURN n;")
 ```
 Alternatively, specify a block to make use of Neo4j's streaming capabilities and receive entries one by one:
 
 ```ruby
-neo4j_query("MATCH (n) RETURN n") do |entry|
-    # entry['n'] is your node
-end
+node = neo4j_query_expect_one("CREATE (n:Node {a: 1, b: 2}) RETURN n;")['n']
+# All nodes returned from Neo4j are a Neo4jBolt::Node
+# It's a subclass of Hash and it stores all the node's
+# properties plus two attributes called id and labels:
+puts node.id
+puts node.labels
+puts node.keys
+node.each_pair { |k, v| puts "#{k}: #{v}" }
+puts node.to_json
 ```
 Using streaming avoids memory hog since it prevents having to read all entries into memory before handling them.
 
-Use `neo4j_query_expect_one` if you want to make sure there's exactly one entry to be returned. If there's zero, two, or more results, this will raise a `ExpectedOneResultError`.
+Use `neo4j_query_expect_one` if you want to make sure there's exactly one entry to be returned:
+
+```ruby
+node = neo4j_query_expect_one("MATCH (n) RETURN n LIMIT 1;")['n']
+```
+
+If there's zero, two, or more results, this will raise a `ExpectedOneResultError`.
 
 ## Development
 
