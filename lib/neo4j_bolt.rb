@@ -1,12 +1,43 @@
 require "neo4j_bolt/version"
 require 'socket'
 require 'json'
+require 'yaml'
 
 module Neo4jBolt
     NEO4J_DEBUG = 0
     class Error < StandardError; end
     class IntegerOutOfRangeError < Error; end
     class SyntaxError < Error; end
+
+    module ServerState
+        DISCONNECTED = 0
+        CONNECTED    = 1
+        DEFUNCT      = 2
+        READY        = 3
+        STREAMING    = 4
+        TX_READY     = 5
+        TX_STREAMING = 6
+        FAILED       = 7
+        INTERRUPTED  = 8
+        STATE_LABELS = %w(DISCONNECTED CONNECTED DEFUNCT READY STREAMING
+                          TX_READY TX_STREAMING FAILED INTERRUPTED)
+    end
+
+    class State
+        def initialize()
+            @state = nil
+            self.set(ServerState::DISCONNECTED)
+        end
+
+        def set(state)
+            @state = state
+            # STDERR.puts "Server state = #{ServerState::STATE_LABELS[@state]}"
+        end
+
+        def ==(other)
+            @state == other
+        end
+    end
 
     class CypherError < StandardError
         def initialize(message, buf = nil)
@@ -224,6 +255,11 @@ module Neo4jBolt
             @socket = nil
             @transaction = 0
             @transaction_failed = false
+            @state = State.new()
+        end
+
+        def assert(condition)
+            raise "Assertion failed" unless condition
         end
 
         def _append(s)
@@ -553,7 +589,9 @@ module Neo4jBolt
                     append_uint8(0xb1)
                     append_uint8(BOLT_RESET)
                     flush()
+                    @state.set(ServerState::READY)
                     read_response()
+                    # BoltBuffer.new(@socket).flush()
                     raise bolt_error(response_dict[:data]['code'], response_dict[:data]['message'])
                 end
                 # STDERR.puts response_dict.to_json
@@ -581,6 +619,7 @@ module Neo4jBolt
             if version != 0x00000404
                 raise "Unable to establish connection to Neo4j using Bolt protocol version 4.4!"
             end
+            @state.set(ServerState::CONNECTED)
             data = {
                 :routing => nil,
                 :scheme => 'none',
@@ -591,8 +630,12 @@ module Neo4jBolt
             append_dict(data)
             flush()
             read_response() do |data|
-                # TODO: Get Neo4j version number here
-                # STDERR.puts " connection established (#{data[:data]['server']})"
+                if data[:marker] == BOLT_SUCCESS
+                    @state.set(ServerState::READY)
+                    @neo4j_version = data[:data]['server']
+                else
+                    @state.set(ServerState::DEFUNCT)
+                end
             end
 
             @transaction = 0
@@ -603,16 +646,19 @@ module Neo4jBolt
             append_uint8(0xb1)
             append_uint8(BOLT_GOODBYE)
             flush()
+            @state.set(ServerState::DEFUNCT)
         end
 
         def transaction(&block)
             connect() if @socket.nil?
             if @transaction == 0
+                assert(@state == ServerState::READY)
                 append_uint8(0xb1)
                 append_uint8(BOLT_BEGIN)
                 append_dict({})
                 flush()
                 read_response()
+                @state.set(ServerState::TX_READY)
                 @transaction_failed = false
             end
             @transaction += 1
@@ -623,7 +669,7 @@ module Neo4jBolt
                 raise
             ensure
                 @transaction -= 1
-                if @transaction == 0 && @transaction_failed
+                if @transaction == 0 && @transaction_failed && @state == ServerState::TX_READY
                     # TODO: Not sure about this, read remaining response but don't block
                     # read_response()
                     STDERR.puts "!!! Rolling back transaction !!!"
@@ -631,6 +677,7 @@ module Neo4jBolt
                     append_uint8(BOLT_ROLLBACK)
                     flush()
                     read_response()
+                    @state.set(ServerState::READY)
                 end
             end
             if (@transaction == 0) && (!@transaction_failed)
@@ -640,6 +687,7 @@ module Neo4jBolt
                 read_response()
                 @transaction = 0
                 @transaction_failed = false
+                @state.set(ServerState::READY)
             end
         end
 
@@ -666,6 +714,7 @@ module Neo4jBolt
                 STDERR.puts '-' * 40
             end
             transaction do
+                assert(@state == ServerState::TX_READY)
                 append_uint8(0xb1)
                 append_uint8(BOLT_RUN)
                 append_s(query)
@@ -682,11 +731,13 @@ module Neo4jBolt
                 end
                 append_dict({}) # options
                 flush()
+                @state.set(ServerState::TX_STREAMING)
                 keys = []
                 read_response do |data|
                     keys = (data[:data]['fields'] || {})
                 end
 
+                assert(@state == ServerState::TX_STREAMING)
                 append_uint8(0xb1)
                 # STDERR.puts "BOLT_PULL"
                 append_uint8(BOLT_PULL)
