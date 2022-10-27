@@ -684,15 +684,25 @@ module Neo4jBolt
                 raise
             ensure
                 @transaction -= 1
-                if @transaction == 0 && @transaction_failed && @state == ServerState::TX_READY
+                if @transaction == 0 && @transaction_failed &&
                     # TODO: Not sure about this, read remaining response but don't block
                     # read_response()
                     # STDERR.puts "!!! Rolling back transaction !!!"
-                    append_uint8(0xb1)
-                    append_token(BoltMarker::BOLT_ROLLBACK)
-                    flush()
-                    read_response()
-                    @state.set(ServerState::READY)
+                    if @state == ServerState::TX_READY
+                        assert(@state == ServerState::TX_READY)
+                        append_uint8(0xb1)
+                        append_token(BoltMarker::BOLT_ROLLBACK)
+                        flush()
+                        read_response do |data|
+                            if data[:marker] == BoltMarker::BOLT_SUCCESS
+                                @state.set(ServerState::READY)
+                            elsif data[:marker] == BoltMarker::BOLT_FAILURE
+                                @state.set(ServerState::FAILED)
+                            else
+                                raise UnexpectedServerResponse.new(data[:marker])
+                            end
+                        end
+                    end
                 end
             end
             if (@transaction == 0) && (!@transaction_failed)
@@ -807,9 +817,11 @@ module Neo4jBolt
 
     def transaction(&block)
         @bolt_socket ||= BoltSocket.new()
-        @bolt_socket.transaction do
-            yield
-        end
+        @bolt_socket.transaction { yield }
+    end
+
+    def rollback()
+        @bolt_socket.rollback
     end
 
     def neo4j_query(query, data = {}, &block)
@@ -838,7 +850,7 @@ module Neo4jBolt
     def dump_database(&block)
         tr_id = {}
         id = 0
-        neo4j_query("MATCH (n) RETURN n;") do |row|
+        neo4j_query("MATCH (n) RETURN n ORDER BY ID(n);") do |row|
             tr_id[row['n'].id] = id
             node = {
                 :id => id,

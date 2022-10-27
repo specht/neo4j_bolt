@@ -36,7 +36,23 @@ In order to use this gem, you need a running Neo4j database. You can start one u
 docker run --rm --env NEO4J_AUTH=none --publish 7687:7687 neo4j:4.4-community
 ```
 
-TODO: Write usage instructions here
+### Running queries
+
+Use `neo4j_query` to run a query and receive all results:
+
+```ruby
+entries = neo4j_query("MATCH (n) RETURN n")
+```
+Alternatively, specify a block to make use of Neo4j's streaming capabilities and receive entries one by one:
+
+```ruby
+neo4j_query("MATCH (n) RETURN n") do |entry|
+    # entry['n'] is your node
+end
+```
+Using streaming avoids memory hog since it prevents having to read all entries into memory before handling them.
+
+Use `neo4j_query_expect_one` if you want to make sure there's exactly one entry to be returned. If there's zero, two, or more results, this will raise a `ExpectedOneResultError`.
 
 ## Development
 

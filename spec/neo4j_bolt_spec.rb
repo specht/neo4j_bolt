@@ -1,11 +1,18 @@
 require 'socket'
 require 'json'
 
-GOT_NEO4J = ['localhost', 7687]
+# Be careful to specify a database here, this script will
+# clear all contents. If you don't know what you're doing,
+# set GOT_NEO4J to nil to launch a Neo4j database via
+# Docker for the sole purpose of testing
 # GOT_NEO4J = nil
+GOT_NEO4J = ['localhost', 7687]
 
 RSpec.describe Neo4jBolt do
     include Neo4jBolt
+
+    class TempError < StandardError; end;
+
     before :all do
         if GOT_NEO4J
             connect_bolt_socket(GOT_NEO4J[0], GOT_NEO4J[1])
@@ -179,5 +186,76 @@ RSpec.describe Neo4jBolt do
         dump = []
         dump_database { |line| dump << line }
         expect(dump.size).to eq 0
+    end
+
+    it 'can create database dumps' do
+        begin
+            transaction do
+                neo4j_query("CREATE (n:Node) SET n.marker = 1;")
+                neo4j_query("CREATE (n:Node) SET n.marker = 2;")
+                neo4j_query("MATCH (a:Node {marker: 1}), (b:Node {marker: 2}) CREATE (a)-[:BELONGS_TO {p: 2}]->(b);")
+                dump = []
+                dump_database { |line| dump << line }
+                expect(dump.size).to eq 3
+                expect(dump.join("\n")).to eq <<~END_OF_STRING.strip
+                    n {"id":0,"labels":["Node"],"properties":{"marker":1}}
+                    n {"id":1,"labels":["Node"],"properties":{"marker":2}}
+                    r {"from":0,"to":1,"type":"BELONGS_TO","properties":{"p":2}}
+                END_OF_STRING
+                # raise error to roll back transaction
+                raise TempError.new
+            end
+        rescue TempError
+        end
+    end
+
+    it 'can return nodes (streaming with block)' do
+        begin
+            transaction do
+                neo4j_query("CREATE (n:Node) SET n.marker = 1;")
+                neo4j_query("CREATE (n:Node) SET n.marker = 2;")
+                seen_markers = Set.new()
+                neo4j_query("MATCH (n:Node) RETURN n ORDER BY n.marker;") do |row|
+                    node = row['n']
+                    expect(node).to be_a Neo4jBolt::Node
+                    expect(node.id).to be_a Integer
+                    expect(node.labels).to be_a Array
+                    expect(node.labels).to eq ['Node']
+                    expect(node).to be_a Hash
+                    expect(node[:marker]).to be_a Integer
+                    seen_markers << node[:marker]
+                end
+                expect(seen_markers.include?(1)).to be true
+                expect(seen_markers.include?(2)).to be true
+                # raise error to roll back transaction
+                raise TempError.new
+            end
+        rescue TempError
+        end
+    end
+
+    it 'can return nodes (without streaming)' do
+        begin
+            transaction do
+                neo4j_query("CREATE (n:Node) SET n.marker = 1;")
+                neo4j_query("CREATE (n:Node) SET n.marker = 2;")
+                seen_markers = Set.new()
+                neo4j_query("MATCH (n:Node) RETURN n ORDER BY n.marker;").each do |row|
+                    node = row['n']
+                    expect(node).to be_a Neo4jBolt::Node
+                    expect(node.id).to be_a Integer
+                    expect(node.labels).to be_a Array
+                    expect(node.labels).to eq ['Node']
+                    expect(node).to be_a Hash
+                    expect(node[:marker]).to be_a Integer
+                    seen_markers << node[:marker]
+                end
+                expect(seen_markers.include?(1)).to be true
+                expect(seen_markers.include?(2)).to be true
+                # raise error to roll back transaction
+                raise TempError.new
+            end
+        rescue TempError
+        end
     end
 end
