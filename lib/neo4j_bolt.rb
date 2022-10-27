@@ -8,6 +8,7 @@ module Neo4jBolt
     class Error < StandardError; end
     class IntegerOutOfRangeError < Error; end
     class SyntaxError < Error; end
+    class ExpectedOneResultError < Error; end
 
     module ServerState
         DISCONNECTED = 0
@@ -36,6 +37,10 @@ module Neo4jBolt
 
         def ==(other)
             @state == other
+        end
+
+        def to_s
+            "#{ServerState::STATE_LABELS[@state] || @state}"
         end
     end
 
@@ -585,7 +590,7 @@ module Neo4jBolt
                 response_dict = parse(buffer)
                 buffer.flush()
                 if response_dict[:marker] == BOLT_FAILURE
-                    STDERR.puts "RESETTING CONNECTION"
+                    # STDERR.puts "RESETTING CONNECTION"
                     append_uint8(0xb1)
                     append_uint8(BOLT_RESET)
                     flush()
@@ -652,6 +657,7 @@ module Neo4jBolt
         def transaction(&block)
             connect() if @socket.nil?
             if @transaction == 0
+                STDERR.puts @state
                 assert(@state == ServerState::READY)
                 append_uint8(0xb1)
                 append_uint8(BOLT_BEGIN)
@@ -672,7 +678,7 @@ module Neo4jBolt
                 if @transaction == 0 && @transaction_failed && @state == ServerState::TX_READY
                     # TODO: Not sure about this, read remaining response but don't block
                     # read_response()
-                    STDERR.puts "!!! Rolling back transaction !!!"
+                    # STDERR.puts "!!! Rolling back transaction !!!"
                     append_uint8(0xb1)
                     append_uint8(BOLT_ROLLBACK)
                     flush()
@@ -714,7 +720,7 @@ module Neo4jBolt
                 STDERR.puts '-' * 40
             end
             transaction do
-                assert(@state == ServerState::TX_READY)
+                assert(@state == ServerState::TX_READY || @state == ServerState::TX_STREAMING)
                 append_uint8(0xb1)
                 append_uint8(BOLT_RUN)
                 append_s(query)
@@ -774,7 +780,7 @@ module Neo4jBolt
         def neo4j_query_expect_one(query, data = {})
             rows = neo4j_query(query, data)
             if rows.size != 1
-                raise "Expected one result, but got #{rows.size}."
+                raise ExpectedOneResultError.new("Expected one result, but got #{rows.size}.")
             end
             rows.first
         end
@@ -811,6 +817,30 @@ module Neo4jBolt
                 sleep delay
                 delay += 1
             end
+        end
+    end
+
+    def dump_database(&block)
+        tr_id = {}
+        id = 0
+        neo4j_query("MATCH (n) RETURN n;") do |row|
+            tr_id[row['n'].id] = id
+            node = {
+                :id => id,
+                :labels => row['n'].labels,
+                :properties => row['n']
+            }
+            yield "n #{node.to_json}"
+            id += 1
+        end
+        neo4j_query("MATCH ()-[r]->() RETURN r;") do |row|
+            rel = {
+                :from => tr_id[row['r'].start_node_id],
+                :to => tr_id[row['r'].end_node_id],
+                :type => row['r'].type,
+                :properties => row['r']
+            }
+            yield "r #{rel.to_json}"
         end
     end
 

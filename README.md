@@ -30,6 +30,12 @@ Or install it yourself as:
 
 ## Usage
 
+In order to use this gem, you need a running Neo4j database. You can start one using the following command:
+
+```
+docker run --rm --env NEO4J_AUTH=none --publish 7687:7687 neo4j:4.4-community
+```
+
 TODO: Write usage instructions here
 
 ## Development

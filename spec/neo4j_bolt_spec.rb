@@ -1,13 +1,8 @@
 require 'socket'
 require 'json'
 
-class GlobalNeo4j
-    include Neo4jBolt
-end
-
-$neo4j = GlobalNeo4j.new()
-
 RSpec.describe Neo4jBolt do
+    include Neo4jBolt
     before :all do
         STDERR.puts "Launching Neo4j!"
         @thread = Thread.new do
@@ -28,7 +23,7 @@ RSpec.describe Neo4jBolt do
                     socket.write("\x00\x00\x00\x00")
                     version = socket.read(4).unpack('N').first
                     STDERR.puts "Connection established!"
-                    $neo4j.connect_bolt_socket('localhost', port)
+                    connect_bolt_socket('localhost', port)
                     break
                 end
             rescue Errno::ECONNREFUSED, Errno::EPIPE, Errno::ECONNRESET
@@ -50,14 +45,14 @@ RSpec.describe Neo4jBolt do
             -9_223_372_036_854_775_808, -2_147_483_649, -2_147_483_648,
             -32769, -32768, -129, -128, -17, -16, 127, 128, 32767, 32768,
             2_147_483_647, 2_147_483_648, 9_223_372_036_854_775_807].each do |i|
-                expect($neo4j.neo4j_query_expect_one("RETURN $i", {:i => i})['$i']).to eq i
+                expect(neo4j_query_expect_one("RETURN $i", {:i => i})['$i']).to eq i
         end
     end
 
     it 'raises an error when trying to transport integers > 64 bits' do
         [-9_223_372_036_854_775_809, 9_223_372_036_854_775_808].each do |i|
             expect do
-                $neo4j.neo4j_query_expect_one("RETURN $i", {:i => i})['$i'] 
+                neo4j_query_expect_one("RETURN $i", {:i => i})['$i']
             end.to raise_error(Neo4jBolt::Error)
         end
     end
@@ -69,7 +64,7 @@ RSpec.describe Neo4jBolt do
             'abcdefghijklmnop' * 0x1000,   # 64k
             'abcdefghijklmnop' * 0x10000,  # 1M
         ].each do |s|
-            expect($neo4j.neo4j_query_expect_one("RETURN $s;", {:s => s})['$s']).to eq s
+            expect(neo4j_query_expect_one("RETURN $s;", {:s => s})['$s']).to eq s
         end
     end
 
@@ -86,7 +81,7 @@ RSpec.describe Neo4jBolt do
             'Зарегистрируйтесь сейчас на Десятую Международную Конференцию по Unicode, которая состоится 10-12 марта 1997 года в Майнце в Германии. Конференция соберет широкий круг экспертов по  вопросам глобального Интернета и Unicode, локализации и интернационализации, воплощению и применению Unicode в различных операционных системах и программных приложениях, шрифтах, верстке и многоязычных компьютерных системах.',
             'ABCDEFGHIJKLMNOPQRSTUVWXYZ /0123456789abcdefghijklmnopqrstuvwxyz £©µÀÆÖÞßéöÿ–—‘“”„†•…‰™œŠŸž€ ΑΒΓΔΩαβγδω АБВГДабвгд∀∂∈ℝ∧∪≡∞ ↑↗↨↻⇣ ┐┼╔╘░►☺♀ ﬁ�⑀₂ἠḂӥẄɐː⍎אԱა'
         ].each do |s|
-            expect($neo4j.neo4j_query_expect_one("RETURN $s;", {:s => s})['$s']).to eq s
+            expect(neo4j_query_expect_one("RETURN $s;", {:s => s})['$s']).to eq s
         end
     end
 
@@ -95,7 +90,7 @@ RSpec.describe Neo4jBolt do
             1.0, Math::PI, Float::INFINITY, -Float::INFINITY,
             Math::sqrt(2.0)
         ].each do |f|
-            expect($neo4j.neo4j_query_expect_one("RETURN $f;", {:f => f})['$f']).to eq f
+            expect(neo4j_query_expect_one("RETURN $f;", {:f => f})['$f']).to eq f
         end
     end
 
@@ -107,7 +102,7 @@ RSpec.describe Neo4jBolt do
             {hey: 1, yes: 2, no: 'of course'},
             {chars: ['A', 'B', 'C', {well: 'no', then: {}}], digits: [1, 2, 3], nothing: nil},
         ].each do |x|
-            expect($neo4j.neo4j_query_expect_one("RETURN $x;", {:x => x})['$x']).to eq x
+            expect(neo4j_query_expect_one("RETURN $x;", {:x => x})['$x']).to eq x
         end
     end
 
@@ -121,20 +116,20 @@ RSpec.describe Neo4jBolt do
             [[],[],[],[]],
             [1, [2, [3, [4, [5, [6]]]]]]
         ].each do |x|
-            expect($neo4j.neo4j_query_expect_one("RETURN $x;", {:x => x})['$x']).to eq x
+            expect(neo4j_query_expect_one("RETURN $x;", {:x => x})['$x']).to eq x
         end
     end
 
     it 'correctly runs a correct query' do
         expect do
-            $neo4j.neo4j_query_expect_one("MATCH (n) RETURN COUNT(n) AS n;")
+            neo4j_query_expect_one("MATCH (n) RETURN COUNT(n) AS n;")
         end.to_not raise_error
     end
 
     it 'raises error on Cypher syntax error' do
         expect do
-            $neo4j.transaction do
-                $neo4j.neo4j_query_expect_one("SMUDGE (n) RETURN COUNT(n) AS n;")
+            transaction do
+                neo4j_query_expect_one("SMUDGE (n) RETURN COUNT(n) AS n;")
             end
         end.to raise_error Neo4jBolt::SyntaxError
     end
@@ -146,8 +141,34 @@ RSpec.describe Neo4jBolt do
             'abcdefghijklmnop' * 0x1000,   # 64k
             'abcdefghijklmnop' * 0x10000,  # 1M
         ].each do |s|
-            expect($neo4j.neo4j_query_expect_one("RETURN #{s.to_json} AS s;", {:s => s})['s']).to eq s
+            expect(neo4j_query_expect_one("RETURN #{s.to_json} AS s;", {:s => s})['s']).to eq s
         end
     end
 
+    it 'has atomic transactions after Neo4jBolt::SyntaxError' do
+        transaction do
+            neo4j_query("CREATE (n:Node) SET n.marker = 1;")
+            begin
+                neo4j_query("SHEESH")
+            rescue Neo4jBolt::SyntaxError
+            end
+        end
+        dump = []
+        dump_database { |line| dump << line }
+        expect(dump.size).to eq 0
+    end
+
+    it 'has atomic transactions after Neo4jBolt::ExpectedOneResultError' do
+        begin
+            transaction do
+                neo4j_query("CREATE (n:Node) SET n.marker = 1;")
+                neo4j_query("CREATE (n:Node) SET n.marker = 1;")
+                neo4j_query_expect_one("MATCH (n) RETURN n;")
+            end
+        rescue Neo4jBolt::ExpectedOneResultError
+        end
+        dump = []
+        dump_database { |line| dump << line }
+        expect(dump.size).to eq 0
+    end
 end

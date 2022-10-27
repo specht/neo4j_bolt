@@ -11,4 +11,5 @@ require "neo4j_bolt"
 # Pry.start
 
 require "irb"
+include Neo4jBolt
 IRB.start(__FILE__)
