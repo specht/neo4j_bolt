@@ -11,6 +11,7 @@ module Neo4jBolt
     self.bolt_port = 7687
 
     NEO4J_DEBUG = 0
+    CONSTRAINT_INDEX_PREFIX = 'neo4j_bolt_'
 
     module ServerState
         DISCONNECTED = 0
@@ -830,6 +831,50 @@ module Neo4jBolt
             end
             rows.first
         end
+
+        def setup_constraints_and_indexes(constraints, indexes)
+            wanted_constraints = Set.new()
+            wanted_indexes = Set.new()
+            # STDERR.puts "Setting up constraints and indexes..."
+            constraints.each do |constraint|
+                unless constraint =~ /\w+\/\w+/
+                    raise "Unexpected constraint format: #{constraint}"
+                end
+                constraint_name = "#{CONSTRAINT_INDEX_PREFIX}#{constraint.gsub('/', '_')}"
+                wanted_constraints << constraint_name
+                label = constraint.split('/').first
+                property = constraint.split('/').last
+                query = "CREATE CONSTRAINT #{constraint_name} IF NOT EXISTS FOR (n:#{label}) REQUIRE n.#{property} IS UNIQUE"
+                # STDERR.puts query
+                neo4j_query(query)
+            end
+            indexes.each do |index|
+                unless index =~ /\w+\/\w+/
+                    raise "Unexpected index format: #{index}"
+                end
+                index_name = "#{CONSTRAINT_INDEX_PREFIX}#{index.gsub('/', '_')}"
+                wanted_indexes << index_name
+                label = index.split('/').first
+                property = index.split('/').last
+                query = "CREATE INDEX #{index_name} IF NOT EXISTS FOR (n:#{label}) ON (n.#{property})"
+                # STDERR.puts query
+                neo4j_query(query)
+            end
+            neo4j_query("SHOW ALL CONSTRAINTS").each do |row|
+                next unless row['name'].index(CONSTRAINT_INDEX_PREFIX) == 0
+                next if wanted_constraints.include?(row['name'])
+                query = "DROP CONSTRAINT #{row['name']}"
+                # STDERR.puts query
+                neo4j_query(query)
+            end
+            neo4j_query("SHOW ALL INDEXES").each do |row|
+                next unless row['name'].index(CONSTRAINT_INDEX_PREFIX) == 0
+                next if wanted_indexes.include?(row['name']) || wanted_constraints.include?(row['name'])
+                query = "DROP INDEX #{row['name']}"
+                # STDERR.puts query
+                neo4j_query(query)
+            end
+        end
     end
 
     def transaction(&block)
@@ -864,7 +909,7 @@ module Neo4jBolt
         end
     end
 
-    def dump_database(&block)
+    def dump_database(io)
         tr_id = {}
         id = 0
         neo4j_query("MATCH (n) RETURN n ORDER BY ID(n);") do |row|
@@ -874,7 +919,7 @@ module Neo4jBolt
                 :labels => row['n'].labels,
                 :properties => row['n']
             }
-            yield "n #{node.to_json}"
+            io.puts "n #{node.to_json}"
             id += 1
         end
         neo4j_query("MATCH ()-[r]->() RETURN r;") do |row|
@@ -884,8 +929,88 @@ module Neo4jBolt
                 :type => row['r'].type,
                 :properties => row['r']
             }
-            yield "r #{rel.to_json}"
+            io.puts "r #{rel.to_json}"
         end
+    end
+
+    def load_database_dump(io, force_append: false)
+        unless force_append
+            transaction do
+                node_count = neo4j_query_expect_one('MATCH (n) RETURN COUNT(n) as count;')['count']
+                unless node_count == 0
+                    raise "Error: There are nodes in this database, exiting now."
+                end
+            end
+        end
+        n_count = 0
+        r_count = 0
+        node_tr = {}
+        node_batch_by_label = {}
+        relationship_batch_by_type = {}
+        io.each_line do |line|
+            line.strip!
+            next if line.empty?
+            if line[0] == 'n'
+                line = line[2, line.size - 2]
+                node = JSON.parse(line)
+                label_key = node['labels'].sort.join('/')
+                node_batch_by_label[label_key] ||= []
+                node_batch_by_label[label_key] << node
+            elsif line[0] == 'r'
+                line = line[2, line.size - 2]
+                relationship = JSON.parse(line)
+                relationship_batch_by_type[relationship['type']] ||= []
+                relationship_batch_by_type[relationship['type']] << relationship
+            else
+                STDERR.puts "Invalid entry: #{line}"
+                exit(1)
+            end
+        end
+        node_batch_by_label.each_pair do |label_key, batch|
+            while !batch.empty? do
+                slice = []
+                json_size = 0
+                while (!batch.empty?) && json_size < 0x20000 && slice.size < 256
+                    x = batch.shift
+                    slice << x
+                    json_size += x.to_json.size
+                end
+                ids = neo4j_query(<<~END_OF_QUERY, {:properties => slice.map { |x| x['properties']}})
+                    UNWIND $properties AS props
+                    CREATE (n:#{slice.first['labels'].join(':')})
+                    SET n = props
+                    RETURN ID(n) AS id;
+                END_OF_QUERY
+                slice.each.with_index do |node, i|
+                    node_tr[node['id']] = ids[i]['id']
+                end
+                n_count += slice.size
+                STDERR.print "\rLoaded #{n_count} nodes, #{r_count} relationships..."
+            end
+        end
+        relationship_batch_by_type.each_pair do |rel_type, batch|
+            batch.each_slice(256) do |slice|
+                slice.map! do |rel|
+                    rel['from'] = node_tr[rel['from']]
+                    rel['to'] = node_tr[rel['to']]
+                    rel
+                end
+                count = neo4j_query_expect_one(<<~END_OF_QUERY, {:slice => slice})['count_r']
+                    UNWIND $slice AS props
+                    MATCH (from), (to) WHERE ID(from) = props.from AND ID(to) = props.to
+                    CREATE (from)-[r:#{rel_type}]->(to)
+                    SET r = props.properties
+                    RETURN COUNT(r) AS count_r, COUNT(from) AS count_from, COUNT(to) AS count_to;
+                END_OF_QUERY
+                if count != slice.size
+                    raise "Ooops... expected #{slice.size} relationships, got #{count}."
+                end
+                r_count += slice.size
+                STDERR.print "\rLoaded #{n_count} nodes, #{r_count} relationships..."
+            end
+        end
+
+        STDERR.puts
     end
 
     def cleanup_neo4j
@@ -893,5 +1018,10 @@ module Neo4jBolt
             @bolt_socket.disconnect()
             @bolt_socket = nil
         end
+    end
+
+    def setup_constraints_and_indexes(constraints, indexes)
+        @bolt_socket ||= BoltSocket.new()
+        @bolt_socket.setup_constraints_and_indexes(constraints, indexes)
     end
 end

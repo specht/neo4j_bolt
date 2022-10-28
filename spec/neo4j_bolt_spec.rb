@@ -5,7 +5,8 @@ require 'json'
 # clear all contents. If you don't know what you're doing,
 # set GOT_NEO4J to nil to launch a Neo4j database via
 # Docker for the sole purpose of testing
-GOT_NEO4J = ENV['QTS_DEVELOPMENT'] == '1' ? ['localhost', 7687] : nil
+# GOT_NEO4J = ENV['QTS_DEVELOPMENT'] == '1' ? ['localhost', 7687] : nil
+GOT_NEO4J = nil
 
 RSpec.describe Neo4jBolt do
     include Neo4jBolt
@@ -17,7 +18,6 @@ RSpec.describe Neo4jBolt do
             Neo4jBolt.bolt_host = GOT_NEO4J[0]
             Neo4jBolt.bolt_port = GOT_NEO4J[1]
         else
-            STDERR.puts "Launching Neo4j!"
             @thread = Thread.new do
                 system("docker run --rm --name neo4j_bolt_rspec --publish-all --env NEO4J_AUTH=none neo4j:4.4-community")
             end
@@ -35,7 +35,6 @@ RSpec.describe Neo4jBolt do
                         socket.write("\x00\x00\x00\x00")
                         socket.write("\x00\x00\x00\x00")
                         version = socket.read(4).unpack('N').first
-                        STDERR.puts "Connection established!"
                         Neo4jBolt.bolt_host = 'localhost'
                         Neo4jBolt.bolt_port = port
                         break
@@ -143,7 +142,7 @@ RSpec.describe Neo4jBolt do
         end.to_not raise_error
     end
 
-    it 'raises error on Cypher syntax error' do
+    it 'raises error on Neo4jBolt::SyntaxError' do
         expect do
             transaction do
                 neo4j_query_expect_one("SMUDGE (n) RETURN COUNT(n) AS n;")
@@ -170,8 +169,10 @@ RSpec.describe Neo4jBolt do
             rescue Neo4jBolt::SyntaxError
             end
         end
-        dump = []
-        dump_database { |line| dump << line }
+        dump = StringIO.open do |io|
+            dump_database(io)
+            io.string
+        end
         expect(dump.size).to eq 0
     end
 
@@ -184,8 +185,10 @@ RSpec.describe Neo4jBolt do
             end
         rescue Neo4jBolt::ExpectedOneResultError
         end
-        dump = []
-        dump_database { |line| dump << line }
+        dump = StringIO.open do |io|
+            dump_database(io)
+            io.string
+        end
         expect(dump.size).to eq 0
     end
 
@@ -195,10 +198,11 @@ RSpec.describe Neo4jBolt do
                 neo4j_query("CREATE (n:Node) SET n.marker = 1;")
                 neo4j_query("CREATE (n:Node) SET n.marker = 2;")
                 neo4j_query("MATCH (a:Node {marker: 1}), (b:Node {marker: 2}) CREATE (a)-[:BELONGS_TO {p: 2}]->(b);")
-                dump = []
-                dump_database { |line| dump << line }
-                expect(dump.size).to eq 3
-                expect(dump.join("\n")).to eq <<~END_OF_STRING.strip
+                dump = StringIO.open do |io|
+                    dump_database(io)
+                    io.string
+                end
+                expect(dump).to eq <<~END_OF_STRING
                     n {"id":0,"labels":["Node"],"properties":{"marker":1}}
                     n {"id":1,"labels":["Node"],"properties":{"marker":2}}
                     r {"from":0,"to":1,"type":"BELONGS_TO","properties":{"p":2}}
@@ -206,6 +210,38 @@ RSpec.describe Neo4jBolt do
                 # raise error to roll back transaction
                 raise TempError.new
             end
+        rescue TempError
+        end
+    end
+
+    it 'can load database dumps' do
+        dump = nil
+        begin
+            transaction do
+                neo4j_query("CREATE (n:Node) SET n.marker = 1;")
+                neo4j_query("CREATE (n:Node) SET n.marker = 2;")
+                neo4j_query("MATCH (a:Node {marker: 1}), (b:Node {marker: 2}) CREATE (a)-[:BELONGS_TO {p: 2}]->(b);")
+                dump = StringIO.open do |io|
+                    dump_database(io)
+                    io.string
+                end
+                raise TempError.new
+            end
+        rescue TempError
+        end
+        begin
+            buffer = StringIO.new(dump)
+            load_database_dump(buffer)
+            new_dump = StringIO.open do |io|
+                dump_database(io)
+                io.string
+            end
+            expect(new_dump).to eq <<~END_OF_STRING
+                n {"id":0,"labels":["Node"],"properties":{"marker":1}}
+                n {"id":1,"labels":["Node"],"properties":{"marker":2}}
+                r {"from":0,"to":1,"type":"BELONGS_TO","properties":{"p":2}}
+            END_OF_STRING
+            raise TempError.new
         rescue TempError
         end
     end
@@ -268,13 +304,14 @@ RSpec.describe Neo4jBolt do
     end
 
     it 'honors uniqueness constraints' do
-        neo4j_query("CREATE CONSTRAINT Node_marker IF NOT EXISTS FOR (n:Node) REQUIRE n.marker IS UNIQUE")
+        setup_constraints_and_indexes(["Node/marker"], [])
+        # neo4j_query("CREATE CONSTRAINT Node_marker IF NOT EXISTS FOR (n:Node) REQUIRE n.marker IS UNIQUE")
         expect do
             transaction do
                 neo4j_query_expect_one("CREATE (n:Node {marker: 1}) RETURN n;")
                 neo4j_query_expect_one("CREATE (n:Node {marker: 1}) RETURN n;")
             end
         end.to raise_error(Neo4jBolt::ConstraintValidationFailedError)
-        neo4j_query("DROP CONSTRAINT Node_marker IF EXISTS")
+        setup_constraints_and_indexes([], [])
     end
 end

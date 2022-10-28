@@ -1,6 +1,6 @@
 # Neo4jBolt
 
-A Neo4j/Bolt driver written in pure Ruby. Currently only supporting Neo4j 4.4.
+A Neo4j/Bolt driver written in pure Ruby. Currently only supporting Neo4j 4.4. Caution: This gem is not feature complete, and also the documention is not complete yet.
 
 ## Installation
 
