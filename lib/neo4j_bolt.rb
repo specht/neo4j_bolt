@@ -660,7 +660,7 @@ module Neo4jBolt
 
         def disconnect()
             append_uint8(0xb1)
-            append_token(BOLT_GOODBYE)
+            append_token(BoltToken::BOLT_GOODBYE)
             flush()
             @state.set(ServerState::DEFUNCT)
         end
