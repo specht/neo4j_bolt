@@ -598,8 +598,13 @@ module Neo4jBolt
                     append_uint8(0xb1)
                     append_token(BoltMarker::BOLT_RESET)
                     flush()
-                    @state.set(ServerState::READY)
-                    read_response()
+                    read_response() do |data|
+                        if data[:marker] == BoltMarker::BOLT_SUCCESS
+                            @state.set(ServerState::READY)
+                        else
+                            raise UnexpectedServerResponse.new(data[:marker])
+                        end
+                    end
                     # BoltBuffer.new(@socket).flush()
                     raise bolt_error(response_dict[:data]['code'], response_dict[:data]['message'])
                 end
@@ -632,7 +637,7 @@ module Neo4jBolt
             data = {
                 :routing => nil,
                 :scheme => 'none',
-                :user_agent => 'qts/0.1'
+                :user_agent => 'neo4j_bolt/0.1'
             }
             append_uint8(0xb1)
             append_token(BoltMarker::BOLT_HELLO)
@@ -677,6 +682,8 @@ module Neo4jBolt
                         @transaction_failed = false
                     elsif data[:marker] == BoltMarker::BOLT_FAILURE
                         @state.set(ServerState::FAILED)
+                    else
+                        raise UnexpectedServerResponse.new(data[:marker])
                     end
                 end
             end
@@ -713,10 +720,15 @@ module Neo4jBolt
                 append_uint8(0xb1)
                 append_token(BoltMarker::BOLT_COMMIT)
                 flush()
-                read_response()
-                @transaction = 0
-                @transaction_failed = false
-                @state.set(ServerState::READY)
+                read_response() do |data|
+                    if data[:marker] == BoltMarker::BOLT_SUCCESS
+                        @transaction = 0
+                        @transaction_failed = false
+                        @state.set(ServerState::READY)
+                    else
+                        raise UnexpectedServerResponse.new(data[:marker])
+                    end
+                end
             end
         end
 
@@ -783,6 +795,8 @@ module Neo4jBolt
                             elsif data[:marker] == BoltMarker::BOLT_SUCCESS
                                 # STDERR.puts data.to_yaml
                                 @state.set(ServerState::TX_READY)
+                            else
+                                raise UnexpectedServerResponse.new(data[:marker])
                             end
                         end
                     elsif data[:marker] == BoltMarker::BOLT_FAILURE

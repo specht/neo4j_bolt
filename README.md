@@ -48,6 +48,17 @@ entries = neo4j_query("MATCH (n) RETURN n;")
 Alternatively, specify a block to make use of Neo4j's streaming capabilities and receive entries one by one:
 
 ```ruby
+neo4j_query("MATCH (n) RETURN n;") do |entry|
+    # handle entry here
+end
+```
+
+Using streaming avoids memory hog since it prevents having to read all entries into memory before handling them. Nodes are returned as `Neo4jBolt::Node`, relationships as `Neo4jBolt::Relationship`. Both are subclasses of `Hash`, providing access to all properties plus a few extra details:
+
+- `Neo4jBolt::Node`: `id`, `labels`
+- `Neo4jBolt::Relationship`: `id`, `start_node_id`, `end_node_id`, `type`
+
+```ruby
 node = neo4j_query_expect_one("CREATE (n:Node {a: 1, b: 2}) RETURN n;")['n']
 # All nodes returned from Neo4j are a Neo4jBolt::Node
 # It's a subclass of Hash and it stores all the node's
@@ -58,8 +69,6 @@ puts node.keys
 node.each_pair { |k, v| puts "#{k}: #{v}" }
 puts node.to_json
 ```
-Using streaming avoids memory hog since it prevents having to read all entries into memory before handling them.
-
 Use `neo4j_query_expect_one` if you want to make sure there's exactly one entry to be returned:
 
 ```ruby
