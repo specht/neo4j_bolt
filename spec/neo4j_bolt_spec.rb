@@ -5,8 +5,8 @@ require 'json'
 # clear all contents. If you don't know what you're doing,
 # set GOT_NEO4J to nil to launch a Neo4j database via
 # Docker for the sole purpose of testing
-GOT_NEO4J = ['localhost', 7687]
-# GOT_NEO4J = nil
+# GOT_NEO4J = ['localhost', 7687]
+GOT_NEO4J = nil
 
 RSpec.describe Neo4jBolt do
     include Neo4jBolt
@@ -259,5 +259,12 @@ RSpec.describe Neo4jBolt do
             end
         rescue TempError
         end
+    end
+
+    it 'can close the connection' do
+        expect do
+            neo4j_query("MATCH (n) RETURN n;")
+            cleanup_neo4j
+        end.not_to raise_error
     end
 end
