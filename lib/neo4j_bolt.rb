@@ -47,6 +47,7 @@ module Neo4jBolt
     class Error < StandardError; end
     class IntegerOutOfRangeError < Error; end
     class SyntaxError < Error; end
+    class ConstraintValidationFailedError < Error; end
     class ExpectedOneResultError < Error; end
     class UnexpectedServerResponse < Error
         def initialize(token)
@@ -583,6 +584,8 @@ module Neo4jBolt
         def bolt_error(code, message)
             if code == 'Neo.ClientError.Statement.SyntaxError'
                 SyntaxError.new(message)
+            elsif code == 'Neo.ClientError.Schema.ConstraintValidationFailed'
+                ConstraintValidationFailedError.new(message)
             else
                 Error.new("#{code}\n#{message}")
             end
