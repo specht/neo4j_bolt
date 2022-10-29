@@ -1,7 +1,11 @@
 #!/usr/bin/env ruby
 
-require "bundler/setup"
-require "neo4j_bolt"
+begin
+    require "neo4j_bolt"
+rescue LoadError
+    require "bundler/setup"
+    require "neo4j_bolt"
+end
 require "gli"
 
 include Neo4jBolt
