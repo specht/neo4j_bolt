@@ -83,6 +83,52 @@ class App
 
     # --------------------------------------------
 
+    desc 'Show or remove constraints and indexes'
+    # long_desc 'Clear all nodes and relationships'
+    command :index do |c|
+        c.command :ls do |c2|
+            c2.action do |global_options, options, args|
+                neo4j_query("SHOW ALL CONSTRAINTS") do |row|
+                    # STDERR.puts row.to_yaml
+                    puts "#{row['type']} #{row['name']} #{row['labelsOrTypes'].join('/')}/#{row['properties'].join('/')}"
+                end
+                neo4j_query("SHOW ALL INDEXES") do |row|
+                    # STDERR.puts row.to_yaml
+                    puts "#{row['uniqueness']} #{row['entityType']} #{row['state']} #{row['populationPercent']}% #{row['name']} #{row['labelsOrTypes'].join('/')}/#{row['properties'].join('/')}"
+                end
+            end
+        end
+        c.command :rm do |c2|
+            c2.switch [:f, :force], :required => true, :negatable => false, :desc => 'Specify --force to really remove all constraints and indexes'
+            c2.action do |global_options, options, args|
+                if options[:force]
+                    all_constraints = []
+                    all_indexes = []
+                    neo4j_query("SHOW ALL CONSTRAINTS") do |row|
+                        all_constraints << row['name']
+                    end
+                    neo4j_query("SHOW ALL INDEXES") do |row|
+                        all_indexes << row['name']
+                    end
+                    transaction do
+                        all_constraints.each do |name|
+                            STDERR.puts "Removing constraint #{name}"
+                            neo4j_query("DROP CONSTRAINT #{name} IF EXISTS")
+                        end
+                        all_indexes.each do |name|
+                            STDERR.puts "Removing index #{name}"
+                            neo4j_query("DROP INDEX #{name} IF EXISTS")
+                        end
+                    end
+                else
+                    STDERR.puts "Doing nothing unless you specify --force."
+                end
+            end
+        end
+    end
+
+    # --------------------------------------------
+
     desc 'Visualize database'
     long_desc 'Generate a GraphViz-formatted visual representation of the database'
     command :visualize do |c|
