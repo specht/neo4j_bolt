@@ -89,12 +89,10 @@ class App
         c.command :ls do |c2|
             c2.action do |global_options, options, args|
                 neo4j_query("SHOW ALL CONSTRAINTS") do |row|
-                    # STDERR.puts row.to_yaml
-                    puts "#{row['type']} #{row['name']} #{(row['labelsOrTypes'] || []).join('/')}/#{row['properties'].join('/')}"
+                    puts "#{row['type']} #{row['name']} #{(row['labelsOrTypes'] || []).join('/')}/#{(row['properties'] || []).join('/')}"
                 end
                 neo4j_query("SHOW ALL INDEXES") do |row|
-                    # STDERR.puts row.to_yaml
-                    puts "#{row['uniqueness']} #{row['entityType']} #{row['state']} #{row['populationPercent']}% #{row['name']} #{row['labelsOrTypes'].join('/')}/#{row['properties'].join('/')}"
+                    puts "#{row['uniqueness']} #{row['entityType']} #{row['state']} #{row['populationPercent']}% #{row['name']} #{(row['labelsOrTypes'] || []).join('/')}/#{(row['properties'] || []).join('/')}"
                 end
             end
         end
