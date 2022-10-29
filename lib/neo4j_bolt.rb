@@ -5,12 +5,12 @@ require 'yaml'
 
 module Neo4jBolt
     class << self
-        attr_accessor :bolt_host, :bolt_port
+        attr_accessor :bolt_host, :bolt_port, :bolt_verbosity
     end
     self.bolt_host = 'localhost'
     self.bolt_port = 7687
+    self.bolt_verbosity = 0
 
-    NEO4J_DEBUG = 0
     CONSTRAINT_INDEX_PREFIX = 'neo4j_bolt_'
 
     module ServerState
@@ -115,7 +115,7 @@ module Neo4jBolt
                     end
                     chunk = @socket.read(length).unpack('C*')
                     @data += chunk
-                    if NEO4J_DEBUG >= 3
+                    if Neo4jBolt.bolt_verbosity >= 3
                         dump()
                     end
                 end
@@ -753,7 +753,7 @@ module Neo4jBolt
         end
 
         def run_query(query, data = {}, &block)
-            if NEO4J_DEBUG >= 1
+            if Neo4jBolt.bolt_verbosity >= 1
                 STDERR.puts query
                 STDERR.puts data.to_json
                 STDERR.puts '-' * 40
@@ -791,7 +791,7 @@ module Neo4jBolt
                                 keys.each.with_index do |key, i|
                                     entry[key] = fix_value(data[:data][i])
                                 end
-                                if NEO4J_DEBUG >= 1
+                                if Neo4jBolt.bolt_verbosity >= 1
                                     STDERR.puts ">>> #{entry.to_json}"
                                     STDERR.puts '-' * 40
                                 end
@@ -938,7 +938,7 @@ module Neo4jBolt
             transaction do
                 node_count = neo4j_query_expect_one('MATCH (n) RETURN COUNT(n) as count;')['count']
                 unless node_count == 0
-                    raise "Error: There are nodes in this database, exiting now."
+                    raise "There are nodes in this database, exiting now."
                 end
             end
         end

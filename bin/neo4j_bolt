@@ -1,0 +1,213 @@
+#!/usr/bin/env ruby
+
+require "bundler/setup"
+require "neo4j_bolt"
+require "gli"
+
+include Neo4jBolt
+
+class App
+    extend GLI::App
+
+    program_desc 'run various Neo4j housekeeping tasks'
+    version Neo4jBolt::VERSION
+
+    flag [:v, :verbosity], :default_value => 0
+    flag [:h, :host], :default_value => 'localhost:7687'
+
+    pre do |global_options, command, options, args|
+        host = global_options[:host]
+        Neo4jBolt.bolt_host = host.split(':').first
+        Neo4jBolt.bolt_port = host.split(':').last.to_i
+        Neo4jBolt.bolt_verbosity = global_options[:verbosity].to_i
+        true
+    end
+
+    # --------------------------------------------
+
+    desc 'Console'
+    command :console do |c|
+        c.action do
+            require "irb"
+            IRB.start(__FILE__)
+        end
+    end
+
+    # --------------------------------------------
+
+    desc 'Dump database'
+    long_desc 'Dump all nodes and relationships.'
+    command :dump do |c|
+        c.flag [:o, :out_file], :default_value => '/dev/stdout'
+        c.action do |global_options, options|
+            File.open(options[:out_file], 'w') do |f|
+                dump_database(f)
+            end
+        end
+    end
+
+    # --------------------------------------------
+
+    desc 'Load database dump'
+    long_desc 'Load nodes and relationships from a database dump.'
+    command :load do |c|
+        # c.flag [:i, :in_file], :desc => 'input path', :required => true
+        c.switch [:f, :force], :default_value => false, :desc => 'force appending nodes even if the database is not empty'
+        c.action do |global_options, options, args|
+            help_now!('input path is required') if args.empty?
+            path = args.shift
+            File.open(path, 'r') do |f|
+                load_database_dump(f, force_append: options[:force])
+            end
+        end
+    end
+
+    # --------------------------------------------
+
+    desc 'Clear database'
+    long_desc 'Clear all nodes and relationships'
+    command :clear do |c|
+        c.switch [:srsly], :required => true, :negatable => false, :desc => 'Specify --srsly to really clear the database'
+        c.action do |global_options, options, args|
+            if options[:srsly]
+                neo4j_query("MATCH (n) DETACH DELETE n;")
+            else
+                STDERR.puts "Doing nothing unless you specify --srsly."
+            end
+        end
+    end
+
+    # --------------------------------------------
+
+    desc 'Visualize database'
+    long_desc 'Generate a GraphViz-formatted visual representation of the database'
+    command :visualize do |c|
+        c.flag [:o, :out_file], :default_value => '/dev/stdout'
+        c.switch [:p, :properties], :default_value => false, :desc => 'include properties'
+        c.action do |global_options, options|
+            File.open(options[:out_file], 'w') do |f|
+                all_labels = Set.new()
+
+                TR = {'String' => 'string',
+                      'Array' => 'list',
+                      'Hash' => 'hash',
+                      'TrueClass' => 'true',
+                      'FalseClass' => 'false',
+                      'NilClass' => 'null',
+                      'Integer' => 'int',
+                      'Float' => 'float'
+                    }
+
+                neo4j_query("MATCH (n) RETURN DISTINCT labels(n) AS labels") do |entry|
+                    labels = entry['labels']
+                    if labels.size != 1
+                        raise "multiple labels per node not supported yet: #{labels.join(' ')}"
+                    end
+                    all_labels << labels.first
+                end
+
+                all_relationships = Set.new()
+
+                neo4j_query("MATCH (a)-[r]->(b) RETURN DISTINCT labels(a) AS la, type(r) AS t, labels(b) AS lb;") do |entry|
+                    la = entry['la'].first
+                    t = entry['t']
+                    lb = entry['lb'].first
+                    all_relationships << "#{la}/#{t}/#{lb}"
+                end
+
+                properties_for_label = {}
+                counts_for_label = {}
+
+                all_labels.to_a.sort.each do |label|
+                    properties_for_label[label] ||= {}
+                    if options[:properties]
+                        neo4j_query("MATCH (n:#{label}) RETURN n") do |entry|
+                            counts_for_label[label] ||= 0
+                            counts_for_label[label] += 1
+                            node = entry['n']
+                            node.each_pair do |key, value|
+                                properties_for_label[label][key] ||= {:classes => Set.new()}
+                                properties_for_label[label][key][:classes] << value.class
+                            end
+                        end
+                    end
+                end
+
+                all_relationships.each do |s|
+                    properties_for_label[s] ||= {}
+                    parts = s.split('/')
+                    la = parts[0]
+                    type = parts[1]
+                    lb = parts[2]
+                    if options[:properties]
+                        neo4j_query("MATCH (a:#{la})-[r:#{type}]->(b:#{lb}) RETURN r") do |entry|
+                            counts_for_label[s] ||= 0
+                            counts_for_label[s] += 1
+                            rel = entry['r']
+                            rel.each_pair do |key, value|
+                                properties_for_label[s][key] ||= {:classes => Set.new()}
+                                properties_for_label[s][key][:classes] << value.class
+                            end
+                        end
+                    end
+                end
+
+                dot = StringIO.open do |io|
+                    io.puts "digraph {"
+                    io.puts "graph [fontname = Helvetica, fontsize = 10, nodesep = 0.2, ranksep = 0.3];"
+                    io.puts "node [fontname = Helvetica, fontsize = 10, shape = none, margin = 0];"
+                    io.puts "edge [fontname = Helvetica, fontsize = 10, arrowsize = 0.6, color = \"#000000\"];"
+                    io.puts 'rankdir=LR;'
+                    io.puts 'splines=true;'
+                    properties_for_label.keys.sort.each do |lbl|
+                        label = "<<table valign='top' align='left' border='0' cellborder='0' cellspacing='0' cellpadding='4'>"
+                        label += "<tr><td border='1' bgcolor='#fce94f' valign='top' align='left' colspan='2'><b>#{lbl}</b>"
+                        if options[:properties]
+                            label += " <i>(#{counts_for_label[lbl]})</i>"
+                        end
+                        label += "</td></tr>"
+                        properties_for_label[lbl].keys.sort.each do |key|
+                            label += "<tr>"
+                            label += "<td border='1' valign='top' align='left' colspan='1'>#{key}</td>"
+                            label += "<td border='1' valign='top' align='left' colspan='1'>#{properties_for_label[lbl][key][:classes].to_a.map { |x| TR[x.to_s] || x.to_s }.sort.join(' / ')}</td>"
+                            label += "</tr>"
+                        end
+                        label += "</table>>"
+                        io.puts "\"#{lbl}\" [label = #{label}, pencolor = \"#000000\"];"
+                    end
+                    all_relationships.each do |s|
+                        parts = s.split('/')
+                        la = parts[0]
+                        type = parts[1]
+                        lb = parts[2]
+
+                        label = "<<table valign='top' align='left' border='0' cellborder='0' cellspacing='0' cellpadding='4'>"
+                        label += "<tr><td border='1' bgcolor='#d3d7cf' valign='top' align='left' colspan='2'><b>#{type}</b>"
+                        if options[:properties]
+                            label += " <i>(#{counts_for_label[s]})</i>"
+                        end
+                        label += "</td></tr>"
+                        (properties_for_label[s] || {}).keys.sort.each do |key|
+                            label += "<tr>"
+                            label += "<td border='1' valign='top' align='left' colspan='1'>#{key}</td>"
+                            label += "<td border='1' valign='top' align='left' colspan='1'>#{properties_for_label[s][key][:classes].to_a.map { |x| TR[x.to_s] || x.to_s }.sort.join(' / ')}</td>"
+                            label += "</tr>"
+                        end
+                        label += "</table>>"
+                        io.puts "\"#{s}\" [label = #{label}, pencolor = \"#000000\"];"
+
+                        io.puts "\"#{la}\" -> \"#{s}\";"
+                        io.puts "\"#{s}\" -> \"#{lb}\";"
+                    end
+
+                    io.puts "}"
+                    io.string
+                end
+                f.puts dot
+            end
+        end
+    end
+
+end
+
+exit App.run(ARGV)
