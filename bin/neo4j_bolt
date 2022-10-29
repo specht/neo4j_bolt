@@ -202,6 +202,30 @@ class App
                     end
                 end
 
+                indexes = {}
+                INDEX_TR = {
+                    'UNIQUENESS' => '<u>unique</u>',
+                    'BTREE' => 'indexed',
+                }
+
+                ['SHOW ALL CONSTRAINTS', 'SHOW ALL INDEXES'].each do |query|
+                    neo4j_query(query) do |row|
+                        # STDERR.puts row.to_json
+                        labels_or_types = row['labelsOrTypes'] || []
+                        properties = row['properties'] || []
+                        type = row['type']
+                        entity = row['entityType']
+                        if labels_or_types.size == 1 && properties.size == 1
+                            label_or_type = labels_or_types.first
+                            property = properties.first
+                            indexes[entity.downcase.to_sym] ||= {}
+                            indexes[entity.downcase.to_sym][label_or_type] ||= {}
+                            indexes[entity.downcase.to_sym][label_or_type][property] ||= Set.new()
+                            indexes[entity.downcase.to_sym][label_or_type][property] << type
+                        end
+                    end
+                end
+
                 dot = StringIO.open do |io|
                     io.puts "digraph {"
                     io.puts "graph [fontname = Helvetica, fontsize = 10, nodesep = 0.2, ranksep = 0.3];"
@@ -218,7 +242,12 @@ class App
                         label += "</td></tr>"
                         properties_for_label[lbl].keys.sort.each do |key|
                             label += "<tr>"
-                            label += "<td border='1' valign='top' align='left' colspan='1'>#{key}</td>"
+                            parts = Set.new()
+                            ((((indexes[:node] || {})[lbl] || {})[key.to_s]) || Set.new()).each do |it|
+                                parts << INDEX_TR[it] || it
+                            end
+                            index_s = parts.empty? ? '' : " <i>(#{parts.join(', ')})</i>"
+                            label += "<td border='1' valign='top' align='left' colspan='1'>#{key}#{index_s}</td>"
                             label += "<td border='1' valign='top' align='left' colspan='1'>#{properties_for_label[lbl][key][:classes].to_a.map { |x| TR[x.to_s] || x.to_s }.sort.join(' / ')}</td>"
                             label += "</tr>"
                         end
@@ -232,15 +261,20 @@ class App
                         lb = parts[2]
 
                         label = "<<table valign='top' align='left' border='0' cellborder='0' cellspacing='0' cellpadding='4'>"
-                        label += "<tr><td border='1' bgcolor='#d3d7cf' valign='top' align='left' colspan='2'><b>#{type}</b>"
+                        label += "<tr><td border='1' color='#888888' bgcolor='#d3d7cf' valign='top' align='left' colspan='2'>#{type}"
                         if options[:properties]
                             label += " <i>(#{counts_for_label[s]})</i>"
                         end
                         label += "</td></tr>"
                         (properties_for_label[s] || {}).keys.sort.each do |key|
                             label += "<tr>"
-                            label += "<td border='1' valign='top' align='left' colspan='1'>#{key}</td>"
-                            label += "<td border='1' valign='top' align='left' colspan='1'>#{properties_for_label[s][key][:classes].to_a.map { |x| TR[x.to_s] || x.to_s }.sort.join(' / ')}</td>"
+                            parts = Set.new()
+                            ((((indexes[:relationship] || {})[type] || {})[key.to_s]) || Set.new()).each do |it|
+                                parts << INDEX_TR[it] || it
+                            end
+                            index_s = parts.empty? ? '' : " <i>(#{parts.join(', ')})</i>"
+                            label += "<td border='1' color='#888888' valign='top' align='left' colspan='1'>#{key}#{index_s}</td>"
+                            label += "<td border='1' color='#888888' valign='top' align='left' colspan='1'>#{properties_for_label[s][key][:classes].to_a.map { |x| TR[x.to_s] || x.to_s }.sort.join(' / ')}</td>"
                             label += "</tr>"
                         end
                         label += "</table>>"
