@@ -284,7 +284,7 @@ class App
                                     mean_s = sprintf('%1.1f', props[lbl][key][:sum][c].to_f / props[lbl][key][:counts][c]).chomp('.0')
                                     min_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:min][c]) : props[lbl][key][:min][c]
                                     max_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:max][c]) : props[lbl][key][:max][c]
-                                    c_is_ts = (c == 'int') && (key.split(/[^a-zA-Z]+/).any? { |x| x == 'ts' || x == 'timestamp'} )
+                                    c_is_ts = (c == 'int') && (key.to_s.split(/[^a-zA-Z]+/).any? { |x| x == 'ts' || x == 'timestamp'} )
                                     if c_is_ts
                                         min_s = Time.at(props[lbl][key][:min][c]).strftime('%Y-%m-%d')
                                         max_s = Time.at(props[lbl][key][:max][c]).strftime('%Y-%m-%d')
