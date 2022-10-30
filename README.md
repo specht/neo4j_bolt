@@ -96,6 +96,19 @@ node = neo4j_query_expect_one("MATCH (n) RETURN n LIMIT 1;")['n']
 
 If there's zero, two, or more results, this will raise a `ExpectedOneResultError`.
 
+## Using transactions
+
+Any Neo4j query will run in its own transaction by default. If you want to group multiple queries into a transaction to make sure they either succeed completely or fail completely, use `transaction` like this:
+
+```ruby
+transaction do
+    neo4j_query("CREATE (n:Node {a: 1});")
+    neo4j_query("CREATE (n:Node {b: 1});")
+end
+```
+
+Transactions can be nested, with the inner transactions doing nothing and the outermost transaction being committed unless something goes wrong in which case the outermost transaction gets rolled back. No matter how often you nest transactions, there's only one transaction from the perspective of Neo4j.
+
 ## Setting up constraints and indexes
 
 Use `setup_constraints_and_indexes` like this:
