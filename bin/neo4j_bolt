@@ -284,14 +284,15 @@ class App
                                     mean_s = sprintf('%1.1f', props[lbl][key][:sum][c].to_f / props[lbl][key][:counts][c]).chomp('.0')
                                     min_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:min][c]) : props[lbl][key][:min][c]
                                     max_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:max][c]) : props[lbl][key][:max][c]
-                                    if c == 'int' && key[0, 2] == 'ts'
+                                    c_is_ts = (c == 'int') && (key.split(/[^a-zA-Z]+/).any? { |x| x == 'ts' || x == 'timestamp'} )
+                                    if c_is_ts
                                         min_s = Time.at(props[lbl][key][:min][c]).strftime('%Y-%m-%d')
                                         max_s = Time.at(props[lbl][key][:max][c]).strftime('%Y-%m-%d')
                                     end
                                     if props[lbl][key][:min][c] == props[lbl][key][:max][c]
                                         label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='center' colspan='6'>#{min_s}</td>"
                                     else
-                                        if c == 'int' && key[0, 2] == 'ts'
+                                        if c_is_ts
                                             label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='3'>#{min_s}</td>"
                                             label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='3'>#{max_s}</td>"
                                         else

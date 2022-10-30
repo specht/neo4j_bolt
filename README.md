@@ -182,7 +182,7 @@ You can see nodes and relationships with their current numbers, plus all propert
 
 Uniqueness constraints and indexes (if available) are shown as well if they are defined on a single node or relationship with a single attribute.
 
-If a property is an integer and starts with `ts`, it gets treated as a UNIX timestamp (just for the visualization).
+If a property is an integer and has `ts` or `timestamp` in its name separated from other alphanumeric characters (like `ts_created` but not like `hits`), it gets treated as a UNIX timestamp (just for the visualization).
 
 ## Development
 
