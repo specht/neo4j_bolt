@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    neo4j_bolt (0.1.12)
+    neo4j_bolt (0.1.14)
       gli
 
 GEM

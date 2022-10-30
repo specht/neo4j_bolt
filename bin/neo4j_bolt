@@ -166,7 +166,7 @@ class App
                 properties_for_label = {}
                 counts_for_label = {}
 
-                all_labels.to_a.sort.each do |label|
+                all_labels.to_a.each do |label|
                     properties_for_label[label] ||= {}
                     if options[:properties]
                         neo4j_query("MATCH (n:#{label}) RETURN n") do |entry|
@@ -174,8 +174,26 @@ class App
                             counts_for_label[label] += 1
                             node = entry['n']
                             node.each_pair do |key, value|
-                                properties_for_label[label][key] ||= {:classes => Set.new()}
-                                properties_for_label[label][key][:classes] << value.class
+                                properties_for_label[label][key] ||= {:classes => Set.new(), :counts => {}, :min => {}, :max => {}, :sum => {}}
+                                c = TR[value.class.to_s] || value.class.to_s
+                                properties_for_label[label][key][:classes] << c
+                                properties_for_label[label][key][:counts][c] ||= 0
+                                properties_for_label[label][key][:counts][c] += 1
+                                sz = if c == 'string' || c == 'list'
+                                    value.size
+                                elsif c == 'int' || c == 'float'
+                                    value
+                                else
+                                    nil
+                                end
+                                unless sz.nil?
+                                    properties_for_label[label][key][:min][c] ||= sz
+                                    properties_for_label[label][key][:min][c] = [properties_for_label[label][key][:min][c], sz].min
+                                    properties_for_label[label][key][:max][c] ||= sz
+                                    properties_for_label[label][key][:max][c] = [properties_for_label[label][key][:max][c], sz].max
+                                    properties_for_label[label][key][:sum][c] ||= 0
+                                    properties_for_label[label][key][:sum][c] += sz
+                                end
                             end
                         end
                     end
@@ -193,8 +211,26 @@ class App
                             counts_for_label[s] += 1
                             rel = entry['r']
                             rel.each_pair do |key, value|
-                                properties_for_label[s][key] ||= {:classes => Set.new()}
-                                properties_for_label[s][key][:classes] << value.class
+                                properties_for_label[s][key] ||= {:classes => Set.new(), :counts => {}, :min => {}, :max => {}, :sum => {}}
+                                c = TR[value.class.to_s] || value.class.to_s
+                                properties_for_label[s][key][:classes] << c
+                                properties_for_label[s][key][:counts][c] ||= 0
+                                properties_for_label[s][key][:counts][c] += 1
+                                sz = if c == 'string' || c == 'list'
+                                    value.size
+                                elsif c == 'int' || c == 'float'
+                                    value
+                                else
+                                    nil
+                                end
+                                unless sz.nil?
+                                    properties_for_label[s][key][:min][c] ||= sz
+                                    properties_for_label[s][key][:min][c] = [properties_for_label[s][key][:min][c], sz].min
+                                    properties_for_label[s][key][:max][c] ||= sz
+                                    properties_for_label[s][key][:max][c] = [properties_for_label[s][key][:max][c], sz].max
+                                    properties_for_label[s][key][:sum][c] ||= 0
+                                    properties_for_label[s][key][:sum][c] += sz
+                                end
                             end
                         end
                     end
@@ -225,6 +261,47 @@ class App
                 end
 
                 dot = StringIO.open do |io|
+                    print_properties = lambda do |props, lbl, rel|
+                        label = ''
+                        (props[lbl] || {}).keys.sort do |a, b|
+                            partsa = Set.new()
+                            ((((indexes[:node] || {})[lbl] || {})[a.to_s]) || Set.new()).each { |it| partsa << INDEX_TR[it] || it }
+                            partsb = Set.new()
+                            ((((indexes[:node] || {})[lbl] || {})[b.to_s]) || Set.new()).each { |it| partsb << INDEX_TR[it] || it }
+                            (partsa.size == partsb.size) ? (a <=> b) : (partsb.size <=> partsa.size)
+                        end.each do |key|
+                            props[lbl][key][:classes].to_a.sort.each.with_index do |c, i|
+                                label += "<tr>"
+                                if i == 0
+                                    parts = Set.new()
+                                    ((((indexes[:node] || {})[lbl] || {})[key.to_s]) || Set.new()).each do |it|
+                                        parts << INDEX_TR[it] || it
+                                    end
+                                    index_s = parts.empty? ? '' : " <i>(#{parts.join(', ')})</i>"
+                                    label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='1' rowspan='#{props[lbl][key][:classes].size}'>#{key}#{index_s}</td>"
+                                end
+                                label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='1'>#{TR[c] || c}</td>"
+                                label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='1'>#{sprintf('%d%%', props[lbl][key][:counts][c] * 100.0 / counts_for_label[lbl])}</td>"
+                                if props[lbl][key][:sum][c]
+                                    mean_s = sprintf('%1.1f', props[lbl][key][:sum][c].to_f / props[lbl][key][:counts][c]).chomp('.0')
+                                    min_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:min][c]) : props[lbl][key][:min][c]
+                                    max_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:max][c]) : props[lbl][key][:max][c]
+                                    if props[lbl][key][:min][c] == props[lbl][key][:max][c]
+                                        label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='center' colspan='3'>#{min_s}</td>"
+                                    else
+                                        label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='1'>#{min_s}</td>"
+                                        label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='1'>#{mean_s}</td>"
+                                        label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='1'>#{max_s}</td>"
+                                    end
+                                else
+                                    label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='3'></td>"
+                                end
+                                label += "</tr>"
+                            end
+                        end
+                        label
+                    end
+
                     io.puts "digraph {"
                     io.puts "graph [fontname = Helvetica, fontsize = 10, nodesep = 0.2, ranksep = 0.3];"
                     io.puts "node [fontname = Helvetica, fontsize = 10, shape = none, margin = 0];"
@@ -233,22 +310,12 @@ class App
                     io.puts 'splines=true;'
                     properties_for_label.keys.sort.each do |lbl|
                         label = "<<table valign='top' align='left' border='0' cellborder='0' cellspacing='0' cellpadding='4'>"
-                        label += "<tr><td border='1' bgcolor='#fce94f' valign='top' align='left' colspan='2'><b>#{lbl}</b>"
+                        label += "<tr><td border='1' bgcolor='#fce94f' valign='top' align='left' colspan='6'><b>#{lbl}</b>"
                         if options[:properties]
                             label += " <i>(#{counts_for_label[lbl]})</i>"
                         end
                         label += "</td></tr>"
-                        properties_for_label[lbl].keys.sort.each do |key|
-                            label += "<tr>"
-                            parts = Set.new()
-                            ((((indexes[:node] || {})[lbl] || {})[key.to_s]) || Set.new()).each do |it|
-                                parts << INDEX_TR[it] || it
-                            end
-                            index_s = parts.empty? ? '' : " <i>(#{parts.join(', ')})</i>"
-                            label += "<td border='1' valign='top' align='left' colspan='1'>#{key}#{index_s}</td>"
-                            label += "<td border='1' valign='top' align='left' colspan='1'>#{properties_for_label[lbl][key][:classes].to_a.map { |x| TR[x.to_s] || x.to_s }.sort.join(' / ')}</td>"
-                            label += "</tr>"
-                        end
+                        label += print_properties.call(properties_for_label, lbl, false)
                         label += "</table>>"
                         io.puts "\"#{lbl}\" [label = #{label}, pencolor = \"#000000\"];"
                     end
@@ -259,27 +326,24 @@ class App
                         lb = parts[2]
 
                         label = "<<table valign='top' align='left' border='0' cellborder='0' cellspacing='0' cellpadding='4'>"
-                        label += "<tr><td border='1' color='#888888' bgcolor='#d3d7cf' valign='top' align='left' colspan='2'>#{type}"
+                        label += "<tr><td border='1' color='#888888' bgcolor='#d3d7cf' valign='top' align='left' colspan='6'>#{type}"
                         if options[:properties]
                             label += " <i>(#{counts_for_label[s]})</i>"
                         end
                         label += "</td></tr>"
-                        (properties_for_label[s] || {}).keys.sort.each do |key|
-                            label += "<tr>"
-                            parts = Set.new()
-                            ((((indexes[:relationship] || {})[type] || {})[key.to_s]) || Set.new()).each do |it|
-                                parts << INDEX_TR[it] || it
-                            end
-                            index_s = parts.empty? ? '' : " <i>(#{parts.join(', ')})</i>"
-                            label += "<td border='1' color='#888888' valign='top' align='left' colspan='1'>#{key}#{index_s}</td>"
-                            label += "<td border='1' color='#888888' valign='top' align='left' colspan='1'>#{properties_for_label[s][key][:classes].to_a.map { |x| TR[x.to_s] || x.to_s }.sort.join(' / ')}</td>"
-                            label += "</tr>"
-                        end
+                        label += print_properties.call(properties_for_label, s, true)
+
                         label += "</table>>"
                         io.puts "\"#{s}\" [label = #{label}, pencolor = \"#000000\"];"
 
-                        io.puts "\"#{la}\" -> \"#{s}\";"
-                        io.puts "\"#{s}\" -> \"#{lb}\";"
+                        cardinality = (counts_for_label[la] > counts_for_label[s]) ?
+                            "#{sprintf('%1.1f', counts_for_label[la].to_f / counts_for_label[s]).chomp('.0')}:1" :
+                            "1:#{sprintf('%1.1f', counts_for_label[s].to_f / counts_for_label[la]).chomp('.0')}"
+                        io.puts "\"#{la}\" -> \"#{s}\" [label = \"#{cardinality}\", fontcolor=\"#888888\"];"
+                        cardinality = (counts_for_label[lb] > counts_for_label[s]) ?
+                            "1:#{sprintf('%1.1f', counts_for_label[lb].to_f / counts_for_label[s]).chomp('.0')}" :
+                            "#{sprintf('%1.1f', counts_for_label[s].to_f / counts_for_label[lb]).chomp('.0')}:1"
+                        io.puts "\"#{s}\" -> \"#{lb}\" [label = \"#{cardinality}\", fontcolor=\"#888888\"];"
                     end
 
                     io.puts "}"
