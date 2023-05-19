@@ -1,6 +1,7 @@
 require "neo4j_bolt/version"
 require 'socket'
 require 'json'
+require 'set'
 require 'yaml'
 
 module Neo4jBolt
@@ -349,6 +350,8 @@ module Neo4jBolt
         def append(v)
             if v.is_a? Array
                 append_array(v)
+            elsif v.is_a? Set
+                append_array(v.to_a)
             elsif v.is_a? Hash
                 append_dict(v)
             elsif v.is_a? String

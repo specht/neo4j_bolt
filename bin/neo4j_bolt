@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 
+STDERR.puts "ATTENTION, VISUALIZE COMMAND CUT OUT SOME STUFF"
+
 begin
     require "neo4j_bolt"
 rescue LoadError
@@ -279,31 +281,31 @@ class App
                                     label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='1' rowspan='#{props[lbl][key][:classes].size}'>#{key}#{index_s}</td>"
                                 end
                                 label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='1'>#{TR[c] || c}</td>"
-                                label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='1'>#{sprintf('%d%%', props[lbl][key][:counts][c] * 100.0 / counts_for_label[lbl])}</td>"
-                                if props[lbl][key][:sum][c]
-                                    mean_s = sprintf('%1.1f', props[lbl][key][:sum][c].to_f / props[lbl][key][:counts][c]).chomp('.0')
-                                    min_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:min][c]) : props[lbl][key][:min][c]
-                                    max_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:max][c]) : props[lbl][key][:max][c]
-                                    c_is_ts = (c == 'int') && (key.to_s.split(/[^a-zA-Z]+/).any? { |x| x == 'ts' || x == 'timestamp'} )
-                                    if c_is_ts
-                                        min_s = Time.at(props[lbl][key][:min][c]).strftime('%Y-%m-%d')
-                                        max_s = Time.at(props[lbl][key][:max][c]).strftime('%Y-%m-%d')
-                                    end
-                                    if props[lbl][key][:min][c] == props[lbl][key][:max][c]
-                                        label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='center' colspan='6'>#{min_s}</td>"
-                                    else
-                                        if c_is_ts
-                                            label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='3'>#{min_s}</td>"
-                                            label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='3'>#{max_s}</td>"
-                                        else
-                                            label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='2'>#{min_s}</td>"
-                                            label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='2'>#{mean_s}</td>"
-                                            label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='2'>#{max_s}</td>"
-                                        end
-                                    end
-                                else
-                                    label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='6'></td>"
-                                end
+                                # label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='1'>#{sprintf('%d%%', props[lbl][key][:counts][c] * 100.0 / counts_for_label[lbl])}</td>"
+                                # if props[lbl][key][:sum][c]
+                                #     mean_s = sprintf('%1.1f', props[lbl][key][:sum][c].to_f / props[lbl][key][:counts][c]).chomp('.0')
+                                #     min_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:min][c]) : props[lbl][key][:min][c]
+                                #     max_s = (c == 'float') ? sprintf('%1.1f', props[lbl][key][:max][c]) : props[lbl][key][:max][c]
+                                #     c_is_ts = (c == 'int') && (key.to_s.split(/[^a-zA-Z]+/).any? { |x| x == 'ts' || x == 'timestamp'} )
+                                #     if c_is_ts
+                                #         min_s = Time.at(props[lbl][key][:min][c]).strftime('%Y-%m-%d')
+                                #         max_s = Time.at(props[lbl][key][:max][c]).strftime('%Y-%m-%d')
+                                #     end
+                                #     if props[lbl][key][:min][c] == props[lbl][key][:max][c]
+                                #         label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='center' colspan='6'>#{min_s}</td>"
+                                #     else
+                                #         if c_is_ts
+                                #             label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='3'>#{min_s}</td>"
+                                #             label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='3'>#{max_s}</td>"
+                                #         else
+                                #             label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='2'>#{min_s}</td>"
+                                #             label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='2'>#{mean_s}</td>"
+                                #             label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='right' colspan='2'>#{max_s}</td>"
+                                #         end
+                                #     end
+                                # else
+                                    # label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='6'></td>"
+                                # end
                                 label += "</tr>"
                             end
                         end
@@ -318,8 +320,8 @@ class App
                     io.puts 'splines=true;'
                     properties_for_label.keys.sort.each do |lbl|
                         label = "<<table valign='top' align='left' border='0' cellborder='0' cellspacing='0' cellpadding='4'>"
-                        label += "<tr><td border='1' bgcolor='#fce94f' valign='top' align='left' colspan='9'><b>#{lbl}</b>"
-                        label += " <i>(#{counts_for_label[lbl]})</i>"
+                        label += "<tr><td border='1' bgcolor='#fce94f' valign='top' align='left' colspan='2'><b>#{lbl}</b>"
+                        # label += " <i>(#{counts_for_label[lbl]})</i>"
                         label += "</td></tr>"
                         label += print_properties.call(properties_for_label, lbl, false)
                         label += "</table>>"
@@ -332,8 +334,8 @@ class App
                         lb = parts[2]
 
                         label = "<<table valign='top' align='left' border='0' cellborder='0' cellspacing='0' cellpadding='4'>"
-                        label += "<tr><td border='1' color='#888888' bgcolor='#d3d7cf' valign='top' align='left' colspan='9'>#{type}"
-                        label += " <i>(#{counts_for_label[s]})</i>"
+                        label += "<tr><td border='1' color='#888888' bgcolor='#d3d7cf' valign='top' align='left' colspan='2'>#{type}"
+                        # label += " <i>(#{counts_for_label[s]})</i>"
                         label += "</td></tr>"
                         label += print_properties.call(properties_for_label, s, true)
 
@@ -343,10 +345,12 @@ class App
                         cardinality = (counts_for_label[la] > counts_for_label[s]) ?
                             "#{sprintf('%1.1f', counts_for_label[la].to_f / counts_for_label[s]).chomp('.0')}:1" :
                             "1:#{sprintf('%1.1f', counts_for_label[s].to_f / counts_for_label[la]).chomp('.0')}"
+                        cardinality = ''
                         io.puts "\"#{la}\" -> \"#{s}\" [label = \"#{cardinality}\", fontcolor=\"#888888\"];"
                         cardinality = (counts_for_label[lb] > counts_for_label[s]) ?
                             "1:#{sprintf('%1.1f', counts_for_label[lb].to_f / counts_for_label[s]).chomp('.0')}" :
                             "#{sprintf('%1.1f', counts_for_label[s].to_f / counts_for_label[lb]).chomp('.0')}:1"
+                        cardinality = ''
                         io.puts "\"#{s}\" -> \"#{lb}\" [label = \"#{cardinality}\", fontcolor=\"#888888\"];"
                     end
 

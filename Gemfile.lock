@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    neo4j_bolt (0.1.17)
+    neo4j_bolt (0.1.20)
       gli
       pry
 
@@ -12,7 +12,7 @@ GEM
     diff-lcs (1.5.0)
     gli (2.21.0)
     method_source (1.0.0)
-    pry (0.14.1)
+    pry (0.14.2)
       coderay (~> 1.1)
       method_source (~> 1.0)
     rake (12.3.3)
