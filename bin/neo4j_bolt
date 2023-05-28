@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-STDERR.puts "ATTENTION, VISUALIZE COMMAND CUT OUT SOME STUFF"
+# STDERR.puts "ATTENTION, VISUALIZE COMMAND CUT OUT SOME STUFF"
 
 begin
     require "neo4j_bolt"
@@ -304,7 +304,7 @@ class App
                                 #         end
                                 #     end
                                 # else
-                                    # label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='6'></td>"
+                                #     label += "<td border='1' color='#{rel ? '#888888' : '#000000'}' valign='top' align='left' colspan='6'></td>"
                                 # end
                                 label += "</tr>"
                             end
