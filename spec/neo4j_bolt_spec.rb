@@ -18,9 +18,7 @@ RSpec.describe Neo4jBolt do
             Neo4jBolt.bolt_host = GOT_NEO4J[0]
             Neo4jBolt.bolt_port = GOT_NEO4J[1]
         else
-            @thread = Thread.new do
-                system("docker run --rm --name neo4j_bolt_rspec --publish-all --env NEO4J_AUTH=none neo4j:4.4-community")
-            end
+            system("docker run --detach --rm --name neo4j_bolt_rspec --publish-all --env NEO4J_AUTH=none neo4j:4.4-community")
             loop do
                 sleep 1
                 begin
@@ -47,7 +45,7 @@ RSpec.describe Neo4jBolt do
 
     after :all do
         unless GOT_NEO4J
-            @thread.kill
+            # @thread.kill
             system("docker kill neo4j_bolt_rspec")
         end
     end
@@ -313,5 +311,50 @@ RSpec.describe Neo4jBolt do
             end
         end.to raise_error(Neo4jBolt::ConstraintValidationFailedError)
         setup_constraints_and_indexes([], [])
+    end
+
+    it 'can handle concurrect read requests' do
+        expect do
+            transaction do
+                (0...10000).each do |i|
+                    neo4j_query("CREATE (i:Integer {value: $i, count: 0});", {:i => i});
+                end
+            end
+            ts0 = Time.now.to_f
+            (0...10).each do |f|
+                fork do
+                    node_count = neo4j_query("MATCH (i:Integer) RETURN i;").map { |x| x['i'] }.size
+                    unless node_count >= 1000
+                        raise 'Wrong count!'
+                    end
+                end
+            end
+            Process.waitall
+            ts1 = Time.now.to_f
+            STDERR.puts "This took #{sprintf('%1.2f', ts1 - ts0)} s."
+        end.not_to raise_error
+    end
+
+    it 'can handle concurrect write requests' do
+        expect do
+            ts0 = Time.now.to_f
+            (0...10).each do |f|
+                fork do
+                    transaction do
+                        (0...500).each do |i|
+                            count = neo4j_query_expect_one("MATCH (i:Integer {value: $i}) SET i.count = i.count + 1 RETURN i;", {:i => i})['i'][:count]
+                        end
+                    end
+                end
+            end
+            Process.waitall
+            (0...500).each do |i|
+                count = neo4j_query_expect_one("MATCH (i:Integer {value: $i}) RETURN i;", {:i => i})['i'][:count]
+                STDERR.print "#{count} "
+            end
+            STDERR.puts
+            ts1 = Time.now.to_f
+            STDERR.puts "This took #{sprintf('%1.2f', ts1 - ts0)} s."
+        end.not_to raise_error
     end
 end

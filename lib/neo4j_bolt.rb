@@ -44,7 +44,7 @@ module Neo4jBolt
         BOLT_IGNORED      = 0x7E
         BOLT_FAILURE      = 0x7F
     end
-    BOLT_MAKER_LABELS = Hash[BoltMarker::constants.map { |value| [BoltMarker::const_get(value), value] }]
+    BOLT_MARKER_LABELS = Hash[BoltMarker::constants.map { |value| [BoltMarker::const_get(value), value] }]
 
     class Error < StandardError; end
     class IntegerOutOfRangeError < Error; end
@@ -57,7 +57,7 @@ module Neo4jBolt
         end
 
         def to_s
-            BOLT_MAKER_LABELS[@token]
+            BOLT_MARKER_LABELS[@token]
         end
     end
 
@@ -276,11 +276,16 @@ module Neo4jBolt
     class BoltSocket
 
         def initialize()
+            reset()
+        end
+
+        def reset()
             @socket = nil
             @transaction = 0
             @transaction_failed = false
             @state = State.new()
             @neo4j_version = nil
+            @pid = Process.pid
         end
 
         def assert(condition)
@@ -296,7 +301,7 @@ module Neo4jBolt
         end
 
         def append_token(i)
-            # STDERR.puts BOLT_MAKER_LABELS[i]
+            # STDERR.puts BOLT_MARKER_LABELS[i]
             append_uint8(i)
         end
 
@@ -673,6 +678,7 @@ module Neo4jBolt
         end
 
         def transaction(&block)
+            reset() if Process.pid != @pid
             connect() if @socket.nil?
             if @transaction == 0
                 # STDERR.puts '*' * 40

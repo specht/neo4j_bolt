@@ -1,3 +1,3 @@
 module Neo4jBolt
-    VERSION = "0.1.21"
+    VERSION = "0.2.0"
 end
