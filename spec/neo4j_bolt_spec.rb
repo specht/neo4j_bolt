@@ -28,7 +28,7 @@ RSpec.describe Neo4jBolt do
                         socket = TCPSocket.open('localhost', port)
                         socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
                         socket.write("\x60\x60\xB0\x17")
-                        socket.write("\x00\x00\x00\x00")
+                        socket.write("\x00\x00\x04\x04")
                         socket.write("\x00\x00\x00\x00")
                         socket.write("\x00\x00\x00\x00")
                         socket.write("\x00\x00\x00\x00")
