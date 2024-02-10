@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    neo4j_bolt (0.2.0)
+    neo4j_bolt (0.2.1)
       gli
       pry
 
