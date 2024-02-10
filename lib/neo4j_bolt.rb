@@ -285,7 +285,7 @@ module Neo4jBolt
             @transaction_failed = false
             @state = State.new()
             @neo4j_version = nil
-            @pid = Process.pid
+            @pidtid = "#{Process.pid}/#{Thread.current.object_id}"
         end
 
         def assert(condition)
@@ -678,7 +678,7 @@ module Neo4jBolt
         end
 
         def transaction(&block)
-            reset() if Process.pid != @pid
+            reset() if @pidtid != "#{Process.pid}/#{Thread.current.object_id}"
             connect() if @socket.nil?
             if @transaction == 0
                 # STDERR.puts '*' * 40
