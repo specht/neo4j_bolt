@@ -18,7 +18,7 @@ RSpec.describe Neo4jBolt do
             Neo4jBolt.bolt_host = GOT_NEO4J[0]
             Neo4jBolt.bolt_port = GOT_NEO4J[1]
         else
-            system("docker run --detach --rm --name neo4j_bolt_rspec --publish-all --env NEO4J_AUTH=none neo4j:4.4-community")
+            system("docker run --detach --rm --name neo4j_bolt_rspec --publish-all --env NEO4J_AUTH=none neo4j:5-community")
             loop do
                 sleep 1
                 begin
