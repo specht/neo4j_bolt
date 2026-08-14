@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGES=(
+    "neo4j:4.4.48-community"
+    "neo4j:5.26.28-community"
+    "neo4j:2026.06.0-community"
+)
+
+if [[ "${1:-}" == "--only" ]]; then
+    if [[ -z "${2:-}" ]]; then
+        echo "usage: $0 [--only neo4j:VERSION-community]" >&2
+        exit 2
+    fi
+    IMAGES=("$2")
+elif [[ $# -ne 0 ]]; then
+    echo "usage: $0 [--only neo4j:VERSION-community]" >&2
+    exit 2
+fi
+
+ACTIVE_CONTAINERS=()
+
+cleanup() {
+    local name
+    for name in "${ACTIVE_CONTAINERS[@]:-}"; do
+        docker rm --force "$name" >/dev/null 2>&1 || true
+    done
+}
+trap cleanup EXIT INT TERM
+
+run_suite() {
+    local image="$1"
+    local safe_image="${image//[^a-zA-Z0-9]/_}"
+    local name="neo4j_bolt_test_${$}_${RANDOM}_${safe_image}"
+    local port=""
+
+    echo
+    echo "==> Testing against ${image}"
+    docker run \
+        --detach \
+        --rm \
+        --name "$name" \
+        --env NEO4J_AUTH=none \
+        --publish 127.0.0.1::7687 \
+        "$image" >/dev/null
+    ACTIVE_CONTAINERS+=("$name")
+
+    while [[ -z "$port" ]]; do
+        if [[ "$(docker inspect --format '{{.State.Running}}' "$name")" != "true" ]]; then
+            docker logs "$name" >&2 || true
+            echo "Neo4j container exited before publishing Bolt" >&2
+            return 1
+        fi
+        port="$(docker inspect --format '{{with (index .NetworkSettings.Ports "7687/tcp")}}{{(index . 0).HostPort}}{{end}}' "$name")"
+    done
+
+    if ! NEO4J_BOLT_TEST_HOST=localhost \
+         NEO4J_BOLT_TEST_PORT="$port" \
+         NEO4J_BOLT_WAIT_ATTEMPTS=60 \
+         NEO4J_BOLT_WAIT_DELAY=1 \
+         bundle exec ruby -Ilib -e \
+             'require "neo4j_bolt"; Neo4jBolt.bolt_host = ENV.fetch("NEO4J_BOLT_TEST_HOST"); Neo4jBolt.bolt_port = Integer(ENV.fetch("NEO4J_BOLT_TEST_PORT")); Neo4jBolt.wait_for_neo4j'; then
+        docker logs "$name" >&2 || true
+        return 1
+    fi
+
+    NEO4J_BOLT_TEST_HOST=localhost \
+    NEO4J_BOLT_TEST_PORT="$port" \
+    bundle exec rspec
+
+    docker rm --force "$name" >/dev/null
+    ACTIVE_CONTAINERS=("${ACTIVE_CONTAINERS[@]/$name}")
+}
+
+for image in "${IMAGES[@]}"; do
+    run_suite "$image"
+done

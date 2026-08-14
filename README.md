@@ -1,196 +1,235 @@
 # Neo4jBolt
 
-A Neo4j/Bolt driver written in pure Ruby. **Currently only supporting Neo4j 4.4 with Bolt 4.4.** Contains a CLI tool which can dump databases, load database dumps, and visualize database contents.
+Neo4jBolt 0.4 is a small compatibility and convenience layer for Ruby applications, backed by [neo4j-ruby-driver](https://github.com/neo4jrb/neo4j-ruby-driver). It preserves the straightforward `Neo4jBolt` application API while delegating connections, pooling, Bolt negotiation, protocol state, PackStream, reconnects, and modern Neo4j value support to the upstream driver.
 
-Caution: This gem is not feature complete regarding Neo4j and Bolt. Nevertheless, it is used successfully in production – make sure it supports the features you need.
+Neo4jBolt no longer implements the Bolt wire protocol itself.
 
-- PackStream:
-  - data types:
-    - supported: Null, Boolean, Integer, Float, String, List, Dictionary, Structure
-    - not supported: Bytes
-  - structures:
-    - supported: Node, Relationship
-    - not supported: UnboundRelationship, Path, Date, Time, LocalTime, DateTime, DateTimeZoneId, LocalDateTime, Duration, Point2D, Point3D
-- Bolt Protocol:
-  - supported: transactions
-  - not supported:
-    - auto transactions (all transactions are explicit in Neo4jBolt)
-    - routing
-    - interrupt
+`0.4.0.pre1` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
 
 ## Installation
 
-Add this line to your application's Gemfile:
+For this prerelease, specify the version explicitly:
 
 ```ruby
-gem 'neo4j_bolt'
+gem "neo4j_bolt", "0.4.0.pre1"
 ```
 
-And then execute:
+Then run `bundle install`. A running Neo4j database is required.
 
-    $ bundle install
+## Connecting
 
-Or install it yourself as:
-
-    $ gem install neo4j_bolt
-
-In order to use this gem, you need a running Neo4j database. Chances are you already have a Neo4j database running if you're reading this. Otherwise, you can start one via Docker using the following command:
-
-```
-docker run --rm --env NEO4J_AUTH=none --publish 7687:7687 neo4j:4.4-community
-```
-
-If you want the Browser interface at http://localhost:7474/, additionaly specify `--publish 7474:7474`.
-
-## Connecting to a Neo4j database
-
-Specify your Bolt host and port (if you omit this it will be localhost:7687 by default):
+The existing host, port, and verbosity settings remain available:
 
 ```ruby
-Neo4jBolt.bolt_host = 'localhost'
+Neo4jBolt.bolt_host = "localhost"
 Neo4jBolt.bolt_port = 7687
+Neo4jBolt.bolt_verbosity = 0
 ```
 
-Use `Neo4jBolt::cleanup_neo4j` to disconnect (this is important when running a web app – it might be a good idea to close a socket once we're done with it so we don't run out of available ports).
+Applications can include the module as before:
+
+```ruby
+include Neo4jBolt
+```
+
+They can also extend another object or call the convenience methods directly on `Neo4jBolt`.
+
+One lazily initialized upstream driver owns a thread-safe connection pool. Each standalone query uses a short-lived session and returns its connection to that pool after its result has been consumed. Queries from several Puma threads are not globally serialized.
+
+`cleanup_neo4j` safely retires the driver and its pool after active operations finish. A later query creates a new driver. Do not call cleanup from inside an active query or transaction on the same thread.
 
 ## Running queries
 
-Use `neo4j_query` to run a query and receive all results:
+Materialize all result rows:
 
 ```ruby
-entries = neo4j_query("MATCH (n) RETURN n;")
+rows = neo4j_query("MATCH (person:Person) RETURN person.name AS name")
+puts rows.first["name"]
 ```
-Alternatively, specify a block to make use of Neo4j's streaming capabilities and receive entries one by one:
+
+Or process records incrementally without first materializing the complete result:
 
 ```ruby
-neo4j_query("MATCH (n) RETURN n;") do |entry|
-    # handle entry here
+neo4j_query("MATCH (person:Person) RETURN person") do |row|
+  puts row["person"][:name]
 end
 ```
 
-Using streaming avoids memory hog since it prevents having to read all entries into memory before handling them. Nodes are returned as `Neo4jBolt::Node`, relationships as `Neo4jBolt::Relationship`. Both are subclasses of `Hash`, providing access to all properties plus a few extra details:
+The block form returns `nil`. Its upstream session, result, and pooled connection remain alive for the duration of iteration.
 
-- `Neo4jBolt::Node` attributes: `id`, `labels`
-- `Neo4jBolt::Relationship` attributes: `id`, `start_node_id`, `end_node_id`, `type`
-
-```ruby
-node = neo4j_query_expect_one("CREATE (n:Node {a: 1, b: 2}) RETURN n;")['n']
-# All nodes returned from Neo4j are a Neo4jBolt::Node
-# It's a subclass of Hash and it stores all the node's
-# properties plus two attributes called id and labels:
-puts node.id
-puts node.labels
-puts node.keys
-node.each_pair { |k, v| puts "#{k}: #{v}" }
-puts node.to_json
-puts "a: #{node[:a]}"
-```
-
-While values returned by Neo4j can be accesses via string keys (`['n']` in the example above), property keys of nodes and relationships are converted to symbols (`node[:a]`).
-
-Use `neo4j_query_expect_one` if you want to make sure there's exactly one entry to be returned:
+Parameters stay separate from Cypher:
 
 ```ruby
-node = neo4j_query_expect_one("MATCH (n) RETURN n LIMIT 1;")['n']
+row = neo4j_query_expect_one(
+  "MATCH (person:Person {email: $email}) RETURN person",
+  email: "ada@example.test"
+)
 ```
 
-If there's zero, two, or more results, this will raise a `ExpectedOneResultError`.
+`neo4j_query_expect_one` raises `Neo4jBolt::ExpectedOneResultError` unless the query produces exactly one row.
 
-## Using transactions
+### Result compatibility
 
-Any Neo4j query will run in its own transaction by default. If you want to group multiple queries into a transaction to make sure they either succeed completely or fail completely, use `transaction` like this:
+Result-row keys are strings:
+
+```ruby
+row["person"]
+```
+
+Nodes and relationships remain Hash subclasses whose property keys are symbols:
+
+```ruby
+node = row["person"]
+node[:name]
+node.id
+node.labels
+node.element_id
+```
+
+`Neo4jBolt::Node` preserves `id` and `labels` and additively exposes `element_id`.
+
+`Neo4jBolt::Relationship` preserves `id`, `start_node_id`, `end_node_id`, and `type`, and additively exposes `element_id`, `start_node_element_id`, and `end_node_element_id`.
+
+Arrays and maps are adapted recursively. Map/property keys inside values are symbols, matching Neo4jBolt 0.3 behavior. Modern upstream values that 0.3 could not represent—such as temporal, spatial, path, byte, duration, and UUID values—pass through as upstream value objects. This is additive support.
+
+Signed 64-bit integer limits are checked before transport. Out-of-range integers raise `Neo4jBolt::IntegerOutOfRangeError`.
+
+## Transactions
+
+The convenient compatibility API is unchanged:
 
 ```ruby
 transaction do
-    neo4j_query("CREATE (n:Node {a: 1});")
-    neo4j_query("CREATE (n:Node {b: 1});")
+  neo4j_query("CREATE (:Person {name: 'Ada'})")
+  neo4j_query("CREATE (:Person {name: 'Grace'})")
 end
 ```
 
-Transactions can be nested, with the inner transactions doing nothing and the outermost transaction being committed unless something goes wrong in which case the outermost transaction gets rolled back. No matter how often you nest transactions, there's only one transaction from the perspective of Neo4j.
+Nested `transaction` blocks reuse one actual upstream session and transaction. Applications do not receive or pass an upstream transaction object.
 
-## Setting up constraints and indexes
+Transaction context is isolated by calling thread and by the object using `Neo4jBolt`. Two threads using the same object receive independent upstream transactions and pooled connections.
 
-Use `setup_constraints_and_indexes` like this:
+Transactions are rollback-only after any nested operation raises, even if application code rescues the exception later. This includes database failures and `ExpectedOneResultError`:
 
 ```ruby
-CONSTRAINTS_LIST = ['User/email', 'Session/sid']
-INDEX_LIST = ['Session/expires']
-setup_constraints_and_indexes(CONSTRAINTS_LIST, INDEX_LIST)
+transaction do
+  neo4j_query("CREATE (:Marker)")
+
+  begin
+    neo4j_query("invalid cypher")
+  rescue Neo4jBolt::SyntaxError
+  end
+end
+# Nothing is committed.
 ```
 
-This setup up two uniqueness constraints and one index:
-- the `email` property of all nodes with label `User` must be unique
-- the `sid` property of all nodes with label `Session` must be unique
-- the `expires` property of all nodes with label `Session` gets indexed for faster lookup
+Calling `rollback` inside a transaction marks that outer transaction rollback-only and returns `nil`. Calling it outside a transaction raises `Neo4jBolt::Error`; the old 0.3 implementation exposed the method but accidentally delegated to a nonexistent private implementation.
 
-Neo4jBolt prefixes all constraints and indexes declared this way with `neo4j_bolt_` and it will remove all such entries previously declared (as detected by the prefix) and not passed to `setup_constraints_and_indexes`. That way, constraints and indexes can be added and removed.
+Upstream server/driver failures are translated to `Neo4jBolt::Error`. Syntax and uniqueness-constraint failures are translated narrowly to `Neo4jBolt::SyntaxError` and `Neo4jBolt::ConstraintValidationFailedError`. The upstream exception remains available as `error.cause`.
 
-Neo4jBolt does not currently support putting constraints on relationships or declaring indexes on relationships or combining several properties into one uniqueness constraint. You are, however, free to declare these constraints and indexes via Cypher yourself.
+## Constraints and indexes
 
-## Housekeeping and inspection
+The existing setup format remains supported:
 
-Use the `neo4j_bolt` command line tool to perform various tasks regarding your database:
+```ruby
+setup_constraints_and_indexes(
+  ["User/email", "Session/sid"],
+  ["Session/expires"]
+)
+```
 
-| Command | Description |
-| ------- | ----------- |
-| `neo4j_bolt console` | launch Pry console with Neo4jBolt |
-| `neo4j_bolt clear` | remove all nodes and relationships, needs `--srsly` argument |
-| `neo4j_bolt dump` | dump database contents |
-| `neo4j_bolt load` | load database dump |
-| `neo4j_bolt index ls` | list all database constraints and indexes |
-| `neo4j_bolt index rm` | remove all constraints and indexes, needs `-f` |
-| `neo4j_bolt visualize` | generates a visual representation of the current datbase contents |
+Managed entries retain the `neo4j_bolt_` prefix. Setup removes obsolete entries with that prefix only; it does not remove arbitrary application-defined indexes or constraints.
 
-Specify you Neo4j host and port using `--host` if your database is not running on localhost:7687.
+## Dump and load
 
-### Dump database contents
+The textual format is unchanged:
 
-When you dump a database, output will go to `/dev/stdout` by default, but it can be redirected to any file via `--out-file`. In the export, node IDs start at 0, regardless of the actual node IDs in the database, and start node / end node IDs in the relationship dumps are adjusted accodingly. Don't rely on actual node IDs within your database, as they may change during export and import. Relationship IDs are omitted in the export.
+```text
+n {"id":0,"labels":["Person"],"properties":{"name":"Ada"}}
+n {"id":1,"labels":["Person"],"properties":{"name":"Grace"}}
+r {"from":0,"to":1,"type":"KNOWS","properties":{"since":2024}}
+```
 
-### Load database dump
+```ruby
+File.open("database.dump", "w") { |io| dump_database(io) }
+File.open("database.dump", "r") { |io| load_database_dump(io) }
+```
 
-A database dump can only be loaded if the database is empty. Otherwise, you'll have to specify `--force`.
+The `0, 1, 2, ...` IDs are synthetic dump-local IDs. Database-internal IDs and element IDs are never written to the persistent format. The adapter uses driver-provided entity identity while dumping and a random temporary property (removed in `ensure`) while loading, so relationship reconstruction does not depend on deprecated persistent integer IDs. To keep dump numbering deterministic, ordering uses `elementId()` on modern Neo4j and an internal `id()` fallback only on Neo4j 4.4, where `elementId()` does not exist. Old Neo4jBolt dumps remain loadable.
 
-### List constraints and indexes
+Loading requires an empty database unless `force_append: true` is passed.
 
-Use the command `neo4j_bolt index ls` to see which constraints and indexes are currently active in the database.
+## CLI
 
-### Remove all constraints and indexes
+The `neo4j_bolt` executable retains these commands:
 
-Use the command `neo4j_bolt index rm -f` to remove all constraints and indexes in the database but make sure you know what you're doing.
+| Command | Purpose |
+| --- | --- |
+| `neo4j_bolt console` | Open an IRB console with Neo4jBolt loaded |
+| `neo4j_bolt clear --srsly` | Delete all nodes and relationships |
+| `neo4j_bolt dump` | Write the textual database dump |
+| `neo4j_bolt load [--force] PATH` | Load a textual dump |
+| `neo4j_bolt index ls` | List constraints and indexes |
+| `neo4j_bolt index rm --force` | Remove all constraints and indexes |
+| `neo4j_bolt visualize` | Generate a GraphViz document |
 
-### Visualize database contents
+Use `--host HOST:PORT` to select a server. `gli` remains a runtime dependency for the CLI, and `pry` remains for the separate `bin/console` executable.
 
-Use the command `neo4j_bolt visualize` to obtain a GraphViz-formatted document suitable for piping into `dot`:
+## Tested Neo4j versions
+
+The same complete integration suite is run against these exact Community images:
+
+- `neo4j:4.4.48-community`
+- `neo4j:5.26.28-community`
+- `neo4j:2026.06.0-community`
+
+No compatibility beyond this matrix is claimed for `0.4.0.pre1`.
+
+Run one modern LTS target:
 
 ```bash
-./bin/neo4j_bolt visualize | dot -Tsvg > graph.svg
+bundle exec rake spec
 ```
 
-If you don't have GraphViz installed, you can use a Docker image instead:
+Run the complete sequential matrix:
 
 ```bash
-./bin/neo4j_bolt visualize | docker run --rm -i nshine/dot dot -Tsvg > graph.svg
+bundle exec rake spec:matrix
 ```
 
-The result looks like this for the movie graph example provided by Neo4j:
+The harness creates uniquely named disposable containers with `NEO4J_AUTH=none`, dynamically publishes Bolt ports, waits by establishing a real driver/query connection, and cleans every container through shell traps. A developer does not need to start Neo4j manually.
 
-<img src="movie_graph.svg" />
+To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HOST` and `NEO4J_BOLT_TEST_PORT`. The explicit port requirement protects real databases from the destructive integration suite.
 
-You can see nodes and relationships with their current numbers, plus all properties with their respective data types and for each data type the percentage of entities with that data type and min / mean / max values (for ints and floats) or min / mean / max lengths (for strings and lists).
+## Compatibility inventory for 0.4
 
-Uniqueness constraints and indexes (if available) are shown as well if they are defined on a single node or relationship with a single attribute.
+| API | Status |
+| --- | --- |
+| `bolt_host`, `bolt_port`, `bolt_verbosity` | Preserved |
+| Included/extended/module-style use | Preserved |
+| `neo4j_query`, including incremental block form | Preserved via adapter |
+| `neo4j_query_expect_one` | Preserved via adapter |
+| `transaction`, nesting, rollback-only behavior | Preserved via thread-local adapter |
+| `rollback` | Preserved and repaired as rollback-only |
+| `cleanup_neo4j`, `wait_for_neo4j` | Preserved via pooled driver lifecycle |
+| `setup_constraints_and_indexes` | Preserved with current Cypher |
+| `dump_database`, `load_database_dump` | Preserved; relationship reconstruction modernized |
+| Named error classes | Preserved with narrow upstream translation |
+| `Node` and `Relationship` Hash behavior | Preserved via recursive value adapter |
+| Element identity and modern values | Additive behavior |
+| CLI commands | Preserved |
+| `BoltSocket`, `BoltBuffer`, protocol markers/state/parser/packer | Intentionally removed private implementation details |
 
-If a property is an integer and has `ts` or `timestamp` in its name separated from other alphanumeric characters (like `ts_created` but not like `hits`), it gets treated as a UNIX timestamp (just for the visualization).
+## 0.4.0.pre1 migration notes
+
+- Ruby 3.4 or newer is required; Ruby 2.x/3.0–3.3 applications should stay on 0.3.x until upgraded.
+- The exact prerelease upstream dependency is pinned while no stable `neo4j-ruby-driver` 6.2.x exists.
+- Connections are pooled and safe for concurrent use instead of one mutable socket per including object.
+- TLS, routing, authentication, database selection, and other upstream-driver configuration are not newly exposed through the legacy three-setting API in this compatibility prerelease.
+- `BoltSocket`, `BoltBuffer`, `ServerState`, `BoltMarker`, `UnexpectedServerResponse`, `State`, and `CypherError` were undocumented wire internals and are removed.
 
 ## Development
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+Run `bin/setup`, then `bundle exec rake spec` or `bundle exec rake spec:matrix`. Build without publishing with `bundle exec rake build`.
 
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and tags, and push the `.gem` file to [rubygems.org](https://rubygems.org).
-
-## Contributing
-
-Bug reports and pull requests are welcome on GitHub at https://github.com/specht/neo4j_bolt.
-
+Bug reports and pull requests are welcome at <https://github.com/specht/neo4j_bolt>.

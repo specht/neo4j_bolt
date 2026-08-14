@@ -92,10 +92,10 @@ class App
     command :index do |c|
         c.command :ls do |c2|
             c2.action do |global_options, options, args|
-                neo4j_query("SHOW ALL CONSTRAINTS") do |row|
+                neo4j_query("SHOW CONSTRAINTS") do |row|
                     puts "#{row['type']} #{row['name']} #{(row['labelsOrTypes'] || []).join('/')}/#{(row['properties'] || []).join('/')}"
                 end
-                neo4j_query("SHOW ALL INDEXES") do |row|
+                neo4j_query("SHOW INDEXES") do |row|
                     puts "#{row['uniqueness']} #{row['entityType']} #{row['state']} #{row['populationPercent']}% #{row['name']} #{(row['labelsOrTypes'] || []).join('/')}/#{(row['properties'] || []).join('/')}"
                 end
             end
@@ -106,10 +106,10 @@ class App
                 if options[:force]
                     all_constraints = []
                     all_indexes = []
-                    neo4j_query("SHOW ALL CONSTRAINTS") do |row|
+                    neo4j_query("SHOW CONSTRAINTS") do |row|
                         all_constraints << row['name']
                     end
-                    neo4j_query("SHOW ALL INDEXES") do |row|
+                    neo4j_query("SHOW INDEXES") do |row|
                         all_indexes << row['name']
                     end
                     transaction do
@@ -242,7 +242,7 @@ class App
                     'BTREE' => 'indexed',
                 }
 
-                ['SHOW ALL CONSTRAINTS', 'SHOW ALL INDEXES'].each do |query|
+                ['SHOW CONSTRAINTS', 'SHOW INDEXES'].each do |query|
                     neo4j_query(query) do |row|
                         # STDERR.puts row.to_json
                         labels_or_types = row['labelsOrTypes'] || []
