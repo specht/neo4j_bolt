@@ -13,7 +13,7 @@ RSpec.describe Neo4jBolt do
 
   describe "public compatibility API" do
     it "has the prerelease version and configurable connection attributes" do
-      expect(Neo4jBolt::VERSION).to eq("0.4.0.pre1")
+      expect(Neo4jBolt::VERSION).to eq("0.4.0")
       expect(Neo4jBolt.bolt_host).to be_a(String)
       expect(Neo4jBolt.bolt_port).to be_a(Integer)
       expect(Neo4jBolt.bolt_verbosity).to be_a(Integer)

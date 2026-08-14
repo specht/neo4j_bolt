@@ -4,14 +4,14 @@ Neo4jBolt 0.4 is a small compatibility and convenience layer for Ruby applicatio
 
 Neo4jBolt no longer implements the Bolt wire protocol itself.
 
-`0.4.0.pre1` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
+`0.4.0` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
 
 ## Installation
 
 For this prerelease, specify the version explicitly:
 
 ```ruby
-gem "neo4j_bolt", "0.4.0.pre1"
+gem "neo4j_bolt", "0.4.0"
 ```
 
 Then run `bundle install`. A running Neo4j database is required.
@@ -183,7 +183,7 @@ The same complete integration suite is run against these exact Community images:
 - `neo4j:5.26.28-community`
 - `neo4j:2026.06.0-community`
 
-No compatibility beyond this matrix is claimed for `0.4.0.pre1`.
+No compatibility beyond this matrix is claimed for `0.4.0`.
 
 Run one modern LTS target:
 
@@ -220,7 +220,7 @@ To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HO
 | CLI commands | Preserved |
 | `BoltSocket`, `BoltBuffer`, protocol markers/state/parser/packer | Intentionally removed private implementation details |
 
-## 0.4.0.pre1 migration notes
+## 0.4.0 migration notes
 
 - Ruby 3.4 or newer is required; Ruby 2.x/3.0–3.3 applications should stay on 0.3.x until upgraded.
 - The exact prerelease upstream dependency is pinned while no stable `neo4j-ruby-driver` 6.2.x exists.
