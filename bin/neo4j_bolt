@@ -49,7 +49,7 @@ class App
         c.flag [:o, 'out-file'.to_sym], :default_value => '/dev/stdout'
         c.action do |global_options, options|
             File.open(options['out-file'.to_sym], 'w') do |f|
-                dump_database(f)
+                dump_database(f, progress_io: $stderr)
             end
         end
     end
@@ -61,11 +61,18 @@ class App
     command :load do |c|
         # c.flag [:i, :in_file], :desc => 'input path', :required => true
         c.switch [:f, :force], :default_value => false, :desc => 'force appending nodes even if the database is not empty'
+        c.flag [:b, 'batch-size'.to_sym], :default_value => Neo4jBolt::LOAD_INITIAL_BATCH_SIZE,
+               :desc => 'initial batch size; automatically reduced on transaction-memory errors'
         c.action do |global_options, options, args|
             help_now!('input path is required') if args.empty?
             path = args.shift
             File.open(path, 'r') do |f|
-                load_database_dump(f, force_append: options[:force])
+                load_database_dump(
+                    f,
+                    force_append: options[:force],
+                    progress_io: $stderr,
+                    initial_batch_size: options['batch-size'.to_sym]
+                )
             end
         end
     end

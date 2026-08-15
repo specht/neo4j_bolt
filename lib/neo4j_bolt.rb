@@ -9,6 +9,86 @@ require "neo4j_bolt/version"
 
 module Neo4jBolt
   CONSTRAINT_INDEX_PREFIX = "neo4j_bolt_"
+  LOAD_INITIAL_BATCH_SIZE = 5_000
+  LOAD_MEMORY_ERROR_CODES = %w[
+    Neo.ClientError.General.TransactionOutOfMemoryError
+    Neo.TransientError.General.MemoryPoolOutOfMemoryError
+    Neo.TransientError.General.TransactionMemoryLimit
+  ].freeze
+  LOAD_MEMORY_GQL_STATUSES = %w[51N72 51N73].freeze
+  LOAD_PROGRESS_STEP = 5_000
+  DUMP_PROGRESS_STEP = 1_000
+  private_constant :LOAD_MEMORY_ERROR_CODES, :LOAD_MEMORY_GQL_STATUSES,
+                   :LOAD_PROGRESS_STEP, :DUMP_PROGRESS_STEP
+
+  class ProgressReporter
+    UPDATE_INTERVAL = 0.5
+
+    def initialize(io)
+      @io = io
+      @tty = io && io.respond_to?(:tty?) && io.tty? && Neo4jBolt.bolt_verbosity.to_i.zero?
+      @last_update_at = nil
+      @line_width = 0
+      @line_open = false
+    end
+
+    def update(message, force: false)
+      return unless @io
+
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      return if !force && @last_update_at && now - @last_update_at < UPDATE_INTERVAL
+
+      if @tty
+        padding = [@line_width - message.length, 0].max
+        @io.print "\r#{message}#{' ' * padding}"
+        @io.flush
+        @line_width = [@line_width, message.length].max
+        @line_open = true
+      else
+        @io.puts message
+      end
+      @last_update_at = now
+    end
+
+    def note(message)
+      return unless @io
+
+      clear_tty_line
+      @io.puts message
+      @last_update_at = nil
+    end
+
+    def finish(message)
+      return unless @io
+
+      update(message, force: true)
+      if @tty
+        @io.puts
+        @line_width = 0
+        @line_open = false
+      end
+    end
+
+    def close
+      return unless @io && @tty && @line_open
+
+      @io.puts
+      @line_width = 0
+      @line_open = false
+    end
+
+    private
+
+    def clear_tty_line
+      return unless @tty && @line_open
+
+      @io.print "\r#{' ' * @line_width}\r"
+      @io.flush
+      @line_width = 0
+      @line_open = false
+    end
+  end
+  private_constant :ProgressReporter
   MIN_INTEGER = -(2**63)
   MAX_INTEGER = (2**63) - 1
   TRANSACTION_CONTEXT_KEY = :neo4j_bolt_transaction_contexts
@@ -319,94 +399,200 @@ module Neo4jBolt
     nil
   end
 
-  def dump_database(io)
-    dump_ids = {}
-    next_dump_id = 0
-    identity_function = dump_identity_function
+  def dump_database(io, progress_io: nil)
+    progress = ProgressReporter.new(progress_io)
+    dumped_nodes = 0
+    dumped_relationships = 0
 
-    neo4j_query("MATCH (n) RETURN n ORDER BY #{identity_function}(n)") do |row|
-      node = row["n"]
-      dump_ids[node.element_id || node.id.to_s] = next_dump_id
-      io.puts "n #{JSON.generate(id: next_dump_id, labels: node.labels, properties: node)}"
-      next_dump_id += 1
+    transaction do
+      identity_function = dump_identity_function
+      total_nodes = neo4j_query_expect_one("MATCH (n) RETURN count(n) AS count")["count"]
+      total_relationships = neo4j_query_expect_one("MATCH ()-[r]->() RETURN count(r) AS count")["count"]
+      dump_ids = total_relationships.positive? ? {} : nil
+
+      progress.update(
+        progress_message("Dumping", dumped_nodes, dumped_relationships, total_nodes, total_relationships),
+        force: true
+      )
+
+      neo4j_query(
+        "MATCH (n) " \
+        "RETURN #{identity_function}(n) AS identity, labels(n) AS labels, properties(n) AS properties " \
+        "ORDER BY #{identity_function}(n)"
+      ) do |row|
+        dump_ids[row["identity"].to_s] = dumped_nodes if dump_ids
+        io.puts "n #{JSON.generate(id: dumped_nodes, labels: row["labels"], properties: row["properties"])}"
+        dumped_nodes += 1
+        if (dumped_nodes % DUMP_PROGRESS_STEP).zero?
+          progress.update(progress_message(
+            "Dumping", dumped_nodes, dumped_relationships, total_nodes, total_relationships
+          ))
+        end
+      end
+
+      if total_relationships.positive?
+        neo4j_query(
+          "MATCH (from)-[r]->(to) " \
+          "RETURN #{identity_function}(from) AS from_identity, " \
+          "#{identity_function}(to) AS to_identity, type(r) AS type, properties(r) AS properties " \
+          "ORDER BY #{identity_function}(r)"
+        ) do |row|
+          io.puts "r #{JSON.generate(
+            from: dump_ids.fetch(row["from_identity"].to_s),
+            to: dump_ids.fetch(row["to_identity"].to_s),
+            type: row["type"],
+            properties: row["properties"]
+          )}"
+          dumped_relationships += 1
+          if (dumped_relationships % DUMP_PROGRESS_STEP).zero?
+            progress.update(progress_message(
+              "Dumping", dumped_nodes, dumped_relationships, total_nodes, total_relationships
+            ))
+          end
+        end
+      end
     end
 
-    neo4j_query("MATCH ()-[r]->() RETURN r ORDER BY #{identity_function}(r)") do |row|
-      relationship = row["r"]
-      from_identity = relationship.start_node_element_id || relationship.start_node_id.to_s
-      to_identity = relationship.end_node_element_id || relationship.end_node_id.to_s
-      io.puts "r #{JSON.generate(
-        from: dump_ids.fetch(from_identity),
-        to: dump_ids.fetch(to_identity),
-        type: relationship.type,
-        properties: relationship
-      )}"
-    end
+    progress.finish("Dumped: #{dumped_nodes} nodes, #{dumped_relationships} relationships")
     nil
+  ensure
+    progress&.close
   end
 
-  def load_database_dump(io, force_append: false)
+  def load_database_dump(io, force_append: false, progress_io: nil,
+                         initial_batch_size: LOAD_INITIAL_BATCH_SIZE)
+    raise Error, "load_database_dump cannot run inside a transaction" if transaction_context
+
+    initial_batch_size = Integer(initial_batch_size)
+    raise ArgumentError, "initial_batch_size must be positive" unless initial_batch_size.positive?
+
     unless force_append
       count = neo4j_query_expect_one("MATCH (n) RETURN count(n) AS count")["count"]
       raise Error, "There are nodes in this database, exiting now." unless count.zero?
     end
 
+    progress = ProgressReporter.new(progress_io)
     node_batches = Hash.new { |hash, key| hash[key] = [] }
     relationship_batches = Hash.new { |hash, key| hash[key] = [] }
-    parse_dump(io, node_batches, relationship_batches)
+    total_nodes, total_relationships = parse_dump(io, node_batches, relationship_batches, progress)
 
-    temporary_id_property = "__neo4j_bolt_load_#{SecureRandom.hex(12)}"
+    temporary_token = SecureRandom.hex(12)
+    temporary_label = "__neo4j_bolt_load_#{temporary_token}"
+    temporary_id_property = "__neo4j_bolt_load_id_#{temporary_token}"
+    temporary_index = "neo4j_bolt_load_#{temporary_token}"
+    quoted_temporary_label = quote_identifier(temporary_label)
     quoted_temporary_id = quote_identifier(temporary_id_property)
+    quoted_temporary_index = quote_identifier(temporary_index)
+    needs_relationship_lookup = total_relationships.positive?
     loaded_nodes = 0
     loaded_relationships = 0
+    index_created = false
 
+    progress.update(
+      progress_message("Loading", loaded_nodes, loaded_relationships, total_nodes, total_relationships,
+                       batch_size: initial_batch_size),
+      force: true
+    )
+
+    original_error = nil
+    cleanup_error = nil
     begin
+      node_batch_size = initial_batch_size
       node_batches.each_value do |nodes|
-        nodes.each_slice(256) do |slice|
+        node_batch_size = adaptive_each_slice(nodes, node_batch_size, progress, "node") do |slice, current_batch_size|
           labels = slice.first.fetch("labels")
           label_clause = labels.map { |label| ":#{quote_identifier(label)}" }.join
+          label_clause += ":#{quoted_temporary_label}" if needs_relationship_lookup
+          temporary_assignment = if needs_relationship_lookup
+                                   "SET n.#{quoted_temporary_id} = item.id\n"
+                                 else
+                                   ""
+                                 end
           count = neo4j_query_expect_one(<<~CYPHER, nodes: slice)["count_n"]
             UNWIND $nodes AS item
             CREATE (n#{label_clause})
             SET n = item.properties
-            SET n.#{quoted_temporary_id} = item.id
-            RETURN count(n) AS count_n
+            #{temporary_assignment}RETURN count(n) AS count_n
           CYPHER
           raise Error, "Expected #{slice.size} nodes, got #{count}." unless count == slice.size
 
           loaded_nodes += slice.size
-          report_load_progress(loaded_nodes, loaded_relationships)
+          progress.update(progress_message(
+            "Loading", loaded_nodes, loaded_relationships, total_nodes, total_relationships,
+            batch_size: current_batch_size
+          ))
         end
       end
 
-      relationship_batches.each do |type, relationships|
-        relationships.each_slice(256) do |slice|
-          count = neo4j_query_expect_one(<<~CYPHER, relationships: slice)["count_r"]
-            UNWIND $relationships AS item
-            MATCH (from) WHERE from.#{quoted_temporary_id} = item.from
-            MATCH (to) WHERE to.#{quoted_temporary_id} = item.to
-            CREATE (from)-[r:#{quote_identifier(type)}]->(to)
-            SET r = item.properties
-            RETURN count(r) AS count_r
-          CYPHER
-          raise Error, "Expected #{slice.size} relationships, got #{count}." unless count == slice.size
+      if needs_relationship_lookup
+        progress.note("Building temporary relationship lookup index...")
+        neo4j_query(
+          "CREATE INDEX #{quoted_temporary_index} " \
+          "FOR (n:#{quoted_temporary_label}) ON (n.#{quoted_temporary_id})"
+        )
+        index_created = true
+        wait_for_load_index(temporary_index, progress)
+        progress.update(
+          progress_message("Loading", loaded_nodes, loaded_relationships, total_nodes, total_relationships,
+                           batch_size: initial_batch_size),
+          force: true
+        )
 
-          loaded_relationships += slice.size
-          report_load_progress(loaded_nodes, loaded_relationships)
+        relationship_batch_size = initial_batch_size
+        relationship_batches.each do |type, relationships|
+          relationship_batch_size = adaptive_each_slice(
+            relationships, relationship_batch_size, progress, "relationship"
+          ) do |slice, current_batch_size|
+            count = neo4j_query_expect_one(<<~CYPHER, relationships: slice)["count_r"]
+              UNWIND $relationships AS item
+              MATCH (from:#{quoted_temporary_label} {#{quoted_temporary_id}: item.from})
+              MATCH (to:#{quoted_temporary_label} {#{quoted_temporary_id}: item.to})
+              CREATE (from)-[r:#{quote_identifier(type)}]->(to)
+              SET r = item.properties
+              RETURN count(r) AS count_r
+            CYPHER
+            raise Error, "Expected #{slice.size} relationships, got #{count}." unless count == slice.size
+
+            loaded_relationships += slice.size
+            progress.update(progress_message(
+              "Loading", loaded_nodes, loaded_relationships, total_nodes, total_relationships,
+              batch_size: current_batch_size
+            ))
+          end
         end
       end
+    rescue Exception => error # rubocop:disable Lint/RescueException -- preserve original failure through cleanup
+      original_error = error
+      raise
     ensure
-      original_error = $!
-      begin
-        neo4j_query("MATCH (n) WHERE n.#{quoted_temporary_id} IS NOT NULL REMOVE n.#{quoted_temporary_id}") if loaded_nodes.positive?
-      rescue Error
-        raise if original_error.nil?
+      if index_created
+        begin
+          neo4j_query("DROP INDEX #{quoted_temporary_index} IF EXISTS")
+        rescue Error => error
+          cleanup_error ||= error
+        end
       end
+
+      if needs_relationship_lookup
+        begin
+          progress&.note("Cleaning temporary load metadata...")
+          cleanup_load_metadata(
+            quoted_temporary_label, quoted_temporary_id, initial_batch_size, total_nodes, progress
+          )
+        rescue Error => error
+          cleanup_error ||= error
+        end
+      end
+
+      raise cleanup_error if original_error.nil? && cleanup_error
     end
 
-    warn if loaded_nodes.positive? || loaded_relationships.positive?
+    progress.finish("Loaded: #{loaded_nodes} nodes, #{loaded_relationships} relationships")
     nil
+  ensure
+    progress&.close
   end
+
 
   private
 
@@ -535,7 +721,11 @@ module Neo4jBolt
     version.to_s.split(".").first.to_i >= 5 ? "elementId" : "id"
   end
 
-  def parse_dump(io, node_batches, relationship_batches)
+  def parse_dump(io, node_batches, relationship_batches, progress = nil)
+    node_count = 0
+    relationship_count = 0
+    progress&.update("Reading dump: 0 nodes, 0 relationships", force: true)
+
     io.each_line.with_index(1) do |line, line_number|
       line = line.strip
       next if line.empty?
@@ -547,16 +737,106 @@ module Neo4jBolt
       if kind == "n"
         labels = value.fetch("labels")
         node_batches[labels.sort] << value
+        node_count += 1
       else
         relationship_batches[value.fetch("type")] << value
+        relationship_count += 1
+      end
+      if ((node_count + relationship_count) % LOAD_PROGRESS_STEP).zero?
+        progress&.update("Reading dump: #{node_count} nodes, #{relationship_count} relationships")
       end
     rescue JSON::ParserError, KeyError => error
       raise Error, "Invalid dump entry on line #{line_number}: #{error.message}"
     end
+
+    progress&.finish("Read dump: #{node_count} nodes, #{relationship_count} relationships")
+    [node_count, relationship_count]
   end
 
-  def report_load_progress(nodes, relationships)
-    warn "Loaded #{nodes} nodes, #{relationships} relationships..." if Neo4jBolt.bolt_verbosity.to_i.positive?
+  def adaptive_each_slice(items, batch_size, progress, kind)
+    offset = 0
+    while offset < items.size
+      slice = items.slice(offset, [batch_size, items.size - offset].min)
+      begin
+        yield slice, batch_size
+        offset += slice.size
+      rescue Error => error
+        raise unless load_batch_memory_error?(error) && slice.size > 1
+
+        reduced_batch_size = [slice.size / 2, 1].max
+        batch_size = [batch_size, reduced_batch_size].min
+        progress&.note(
+          "Neo4j rejected a #{kind} batch of #{slice.size} for transaction memory; " \
+          "retrying with batches of #{batch_size}."
+        )
+      end
+    end
+    batch_size
+  end
+
+  def load_batch_memory_error?(error)
+    upstream = error.cause
+    return false unless upstream
+
+    LOAD_MEMORY_ERROR_CODES.include?(upstream.respond_to?(:code) ? upstream.code : nil) ||
+      LOAD_MEMORY_GQL_STATUSES.include?(upstream.respond_to?(:gql_status) ? upstream.gql_status : nil)
+  end
+
+  def wait_for_load_index(index_name, progress)
+    loop do
+      row = neo4j_query_expect_one(<<~CYPHER, name: index_name)
+        SHOW INDEXES YIELD name, state, populationPercent
+        WHERE name = $name
+        RETURN state, populationPercent
+      CYPHER
+      state = row["state"]
+      population = row["populationPercent"] || 0
+      if state == "ONLINE"
+        progress&.finish("Temporary relationship lookup index ready.")
+        return
+      end
+      raise Error, "Temporary load index #{index_name} entered state #{state}." if state == "FAILED"
+
+      progress&.update("Building temporary relationship lookup index: #{population.to_i}%")
+      sleep 0.25
+    end
+  end
+
+  def cleanup_load_metadata(quoted_label, quoted_id, batch_size, total_nodes, progress)
+    cleaned_nodes = 0
+    loop do
+      begin
+        count = neo4j_query_expect_one(<<~CYPHER, limit: batch_size)["count_n"]
+          MATCH (n:#{quoted_label})
+          WITH n LIMIT $limit
+          REMOVE n.#{quoted_id}
+          REMOVE n:#{quoted_label}
+          RETURN count(n) AS count_n
+        CYPHER
+        break if count.zero?
+
+        cleaned_nodes += count
+        progress&.update("Cleaning temporary load metadata: #{cleaned_nodes}/#{total_nodes} nodes")
+      rescue Error => error
+        raise unless load_batch_memory_error?(error) && batch_size > 1
+
+        batch_size = [batch_size / 2, 1].max
+        progress&.note(
+          "Neo4j rejected a cleanup batch for transaction memory; retrying with batches of #{batch_size}."
+        )
+      end
+    end
+    progress&.finish("Temporary load metadata removed.")
+  end
+
+  def progress_message(action, nodes, relationships, total_nodes, total_relationships, batch_size: nil)
+    total = total_nodes + total_relationships
+    completed = nodes + relationships
+    percent = total.zero? ? 100 : (completed * 100 / total)
+    message = "#{action}: #{nodes}/#{total_nodes} nodes, " \
+              "#{relationships}/#{total_relationships} relationships (#{percent}%)"
+    message += " [batch #{batch_size}]" if batch_size
+    message
   end
 
   def log_query(query, data)

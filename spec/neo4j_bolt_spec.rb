@@ -13,7 +13,7 @@ RSpec.describe Neo4jBolt do
 
   describe "public compatibility API" do
     it "has the prerelease version and configurable connection attributes" do
-      expect(Neo4jBolt::VERSION).to eq("0.4.0")
+      expect(Neo4jBolt::VERSION).to eq("0.4.1")
       expect(Neo4jBolt.bolt_host).to be_a(String)
       expect(Neo4jBolt.bolt_port).to be_a(Integer)
       expect(Neo4jBolt.bolt_verbosity).to be_a(Integer)
@@ -311,6 +311,59 @@ RSpec.describe Neo4jBolt do
       neo4j_query("CREATE (:Existing)")
       expect { load_database_dump(StringIO.new(old_dump)) }.to raise_error(Neo4jBolt::Error, /There are nodes/)
       expect { load_database_dump(StringIO.new(old_dump), force_append: true) }.not_to raise_error
+    end
+
+    it "reports progress separately from dump data and removes temporary lookup state" do
+      load_progress = StringIO.new
+      load_database_dump(
+        StringIO.new(old_dump),
+        progress_io: load_progress,
+        initial_batch_size: 2
+      )
+      expect(load_progress.string).to include("Reading dump:", "Loading:", "Loaded:")
+      expect(schema_names("SHOW INDEXES").grep(/^neo4j_bolt_load_/)).to be_empty
+
+      dumped = StringIO.new
+      dump_progress = StringIO.new
+      dump_database(dumped, progress_io: dump_progress)
+      expect(dump_progress.string).to include("Dumping:", "Dumped:")
+      expect(dumped.string).not_to include("Dumping:", "Dumped:")
+      expect(dumped.string.lines).to all(match(/\A(?:n|r) /))
+    end
+
+    it "halves rollback-safe transaction-memory batches and keeps the reduced size" do
+      upstream = StandardError.new("transaction memory")
+      upstream.define_singleton_method(:code) { "Neo.ClientError.General.TransactionOutOfMemoryError" }
+      upstream.define_singleton_method(:gql_status) { nil }
+      memory_error = begin
+        raise Neo4jBolt::Error.new("transaction memory"), cause: upstream
+      rescue Neo4jBolt::Error => error
+        error
+      end
+
+      attempts = []
+      processed = []
+      final_batch_size = send(:adaptive_each_slice, (1..8).to_a, 8, nil, "node") do |slice, _batch_size|
+        attempts << slice.size
+        raise memory_error if slice.size > 2
+
+        processed.concat(slice)
+      end
+
+      expect(attempts).to eq([8, 4, 2, 2, 2, 2])
+      expect(processed).to eq((1..8).to_a)
+      expect(final_batch_size).to eq(2)
+    end
+
+    it "does not retry arbitrary load errors" do
+      attempts = 0
+      expect do
+        send(:adaptive_each_slice, [1, 2], 2, nil, "node") do
+          attempts += 1
+          raise Neo4jBolt::Error, "not safe to retry"
+        end
+      end.to raise_error(Neo4jBolt::Error, /not safe to retry/)
+      expect(attempts).to eq(1)
     end
   end
 

@@ -151,13 +151,21 @@ r {"from":0,"to":1,"type":"KNOWS","properties":{"since":2024}}
 ```
 
 ```ruby
-File.open("database.dump", "w") { |io| dump_database(io) }
-File.open("database.dump", "r") { |io| load_database_dump(io) }
+File.open("database.dump", "w") { |io| dump_database(io, progress_io: $stderr) }
+File.open("database.dump", "r") do |io|
+  load_database_dump(io, progress_io: $stderr)
+end
 ```
 
-The `0, 1, 2, ...` IDs are synthetic dump-local IDs. Database-internal IDs and element IDs are never written to the persistent format. The adapter uses driver-provided entity identity while dumping and a random temporary property (removed in `ensure`) while loading, so relationship reconstruction does not depend on deprecated persistent integer IDs. To keep dump numbering deterministic, ordering uses `elementId()` on modern Neo4j and an internal `id()` fallback only on Neo4j 4.4, where `elementId()` does not exist. Old Neo4jBolt dumps remain loadable.
+Passing `progress_io:` is optional for the Ruby API. The CLI always reports dump/load progress on stderr, so dump data written to stdout remains safe to redirect or pipe. Terminal progress is updated in place; redirected stderr receives periodic progress lines.
 
-Loading requires an empty database unless `force_append: true` is passed.
+The `0, 1, 2, ...` IDs are synthetic dump-local IDs. Database-internal IDs and element IDs are never written to the persistent format. Dumping keeps the count, node, and relationship reads in one transaction, so the driver-provided entity identity used to connect the two streamed result sets stays within Neo4j's transaction-scoped identity guarantee. To keep dump numbering deterministic, ordering uses `elementId()` on modern Neo4j and an internal `id()` fallback only on Neo4j 4.4, where `elementId()` does not exist. Old Neo4jBolt dumps remain loadable.
+
+For relational loads, the adapter assigns a random temporary label and dump-ID property to imported nodes. After the nodes are committed it builds a temporary `neo4j_bolt_` index on that property, uses indexed lookups while creating relationships, drops the index, and removes the temporary metadata in batches. No database-internal identity is carried from one load transaction to another. Loading a relational dump therefore requires permission to create and drop an index.
+
+Loads start with batches of 5,000 records by default. This is an initial ceiling rather than a claimed optimum: if Neo4j returns a transaction-memory/resource error whose server semantics guarantee rollback, the loader halves the failed batch and retries it, then keeps the smaller size for the rest of that phase. Node and relationship phases adapt independently. Other errors are not retried, because a generic connection failure cannot safely prove that a `CREATE` transaction did not commit. Callers can change the initial ceiling with `initial_batch_size:`; the CLI exposes the same setting as `--batch-size`.
+
+Loading requires an empty database unless `force_append: true` is passed. `load_database_dump` owns its batch transactions and therefore rejects being called from inside `transaction`.
 
 ## CLI
 
@@ -168,7 +176,7 @@ The `neo4j_bolt` executable retains these commands:
 | `neo4j_bolt console` | Open an IRB console with Neo4jBolt loaded |
 | `neo4j_bolt clear --srsly` | Delete all nodes and relationships |
 | `neo4j_bolt dump` | Write the textual database dump |
-| `neo4j_bolt load [--force] PATH` | Load a textual dump |
+| `neo4j_bolt load [--force] [--batch-size N] PATH` | Load a textual dump |
 | `neo4j_bolt index ls` | List constraints and indexes |
 | `neo4j_bolt index rm --force` | Remove all constraints and indexes |
 | `neo4j_bolt visualize` | Generate a GraphViz document |
@@ -233,3 +241,4 @@ To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HO
 Run `bin/setup`, then `bundle exec rake spec` or `bundle exec rake spec:matrix`. Build without publishing with `bundle exec rake build`.
 
 Bug reports and pull requests are welcome at <https://github.com/specht/neo4j_bolt>.
+
