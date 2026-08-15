@@ -47,9 +47,10 @@ class App
     long_desc 'Dump all nodes and relationships.'
     command :dump do |c|
         c.flag [:o, 'out-file'.to_sym], :default_value => '/dev/stdout'
+        c.flag [:color], :default_value => 'cyan', :desc => 'progress accent color'
         c.action do |global_options, options|
             File.open(options['out-file'.to_sym], 'w') do |f|
-                dump_database(f, progress_io: $stderr)
+                dump_database(f, progress_io: $stderr, progress_color: options[:color])
             end
         end
     end
@@ -63,6 +64,7 @@ class App
         c.switch [:f, :force], :default_value => false, :desc => 'force appending nodes even if the database is not empty'
         c.flag [:b, 'batch-size'.to_sym], :default_value => Neo4jBolt::LOAD_INITIAL_BATCH_SIZE,
                :desc => 'initial batch size; automatically reduced on transaction-memory errors'
+        c.flag [:color], :default_value => 'cyan', :desc => 'progress accent color'
         c.action do |global_options, options, args|
             help_now!('input path is required') if args.empty?
             path = args.shift
@@ -71,6 +73,7 @@ class App
                     f,
                     force_append: options[:force],
                     progress_io: $stderr,
+                    progress_color: options[:color],
                     initial_batch_size: options['batch-size'.to_sym]
                 )
             end

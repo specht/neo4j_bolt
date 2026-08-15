@@ -29,13 +29,35 @@ module Neo4jBolt
       reset: "\e[0m",
       bold: "\e[1m",
       dim: "\e[2m",
-      cyan: "\e[36m",
+      red: "\e[31m",
       green: "\e[32m",
-      yellow: "\e[33m"
+      yellow: "\e[33m",
+      blue: "\e[34m",
+      magenta: "\e[35m",
+      cyan: "\e[36m",
+      white: "\e[37m",
+      bright_red: "\e[91m",
+      bright_green: "\e[92m",
+      bright_yellow: "\e[93m",
+      bright_blue: "\e[94m",
+      bright_magenta: "\e[95m",
+      bright_cyan: "\e[96m",
+      bright_white: "\e[97m"
+    }.freeze
+    ACCENT_STYLES = {
+      "red" => :red, "green" => :green, "yellow" => :yellow, "blue" => :blue,
+      "magenta" => :magenta, "cyan" => :cyan, "white" => :white,
+      "bright-red" => :bright_red, "bright-green" => :bright_green,
+      "bright-yellow" => :bright_yellow, "bright-blue" => :bright_blue,
+      "bright-magenta" => :bright_magenta, "bright-cyan" => :bright_cyan,
+      "bright-white" => :bright_white
     }.freeze
 
-    def initialize(io)
+    def initialize(io, color: "cyan")
       @io = io
+      @accent_style = ACCENT_STYLES.fetch(color.to_s) do
+        raise ArgumentError, "progress color must be one of: #{ACCENT_STYLES.keys.join(', ')}"
+      end
       mode = ENV.fetch("NEO4J_BOLT_PROGRESS", "auto")
       unless %w[auto pretty plain].include?(mode)
         raise ArgumentError, "NEO4J_BOLT_PROGRESS must be auto, pretty, or plain"
@@ -110,7 +132,7 @@ module Neo4jBolt
       spinner = SPINNER[@spinner_index % SPINNER.length]
       @spinner_index += 1
 
-      parts = [color(:cyan, spinner), color(:bold, label)]
+      parts = [color(@accent_style, spinner), color(:bold, label)]
       if percent
         percent = [[percent.to_i, 0].max, 100].min
         parts << progress_bar(percent)
@@ -123,7 +145,7 @@ module Neo4jBolt
     def progress_bar(percent)
       filled = (percent * BAR_WIDTH / 100.0).round
       empty = BAR_WIDTH - filled
-      "#{color(:cyan, '━' * filled)}#{color(:dim, '─' * empty)}"
+      "#{color(@accent_style, '━' * filled)}#{color(:dim, '─' * empty)}"
     end
 
     def terminal_parts(message, strip_percent: false)
@@ -514,8 +536,8 @@ module Neo4jBolt
     nil
   end
 
-  def dump_database(io, progress_io: nil)
-    progress = ProgressReporter.new(progress_io)
+  def dump_database(io, progress_io: nil, progress_color: "cyan")
+    progress = ProgressReporter.new(progress_io, color: progress_color)
     dumped_nodes = 0
     dumped_relationships = 0
 
@@ -574,7 +596,7 @@ module Neo4jBolt
     progress&.close
   end
 
-  def load_database_dump(io, force_append: false, progress_io: nil,
+  def load_database_dump(io, force_append: false, progress_io: nil, progress_color: "cyan",
                          initial_batch_size: LOAD_INITIAL_BATCH_SIZE)
     raise Error, "load_database_dump cannot run inside a transaction" if transaction_context
 
@@ -586,7 +608,7 @@ module Neo4jBolt
       raise Error, "There are nodes in this database, exiting now." unless count.zero?
     end
 
-    progress = ProgressReporter.new(progress_io)
+    progress = ProgressReporter.new(progress_io, color: progress_color)
     node_batches = Hash.new { |hash, key| hash[key] = [] }
     relationship_batches = Hash.new { |hash, key| hash[key] = [] }
     total_nodes, total_relationships = parse_dump(io, node_batches, relationship_batches, progress)

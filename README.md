@@ -159,6 +159,13 @@ end
 
 Passing `progress_io:` is optional for the Ruby API. The CLI always reports dump/load progress on stderr, so dump data written to stdout remains safe to redirect or pipe. In `auto` mode a terminal gets a colored, in-place progress bar while redirected stderr receives periodic plain-text progress lines. Set `NEO4J_BOLT_PROGRESS=pretty` to force the terminal display through a container or other wrapper that hides the TTY, or `NEO4J_BOLT_PROGRESS=plain` to force log-friendly output. `NO_COLOR` disables colors without disabling the in-place display.
 
+Both `dump` and `load` accept `--color COLOR` to choose the spinner and filled progress-bar accent. The default is `cyan`. The Ruby API exposes the same setting as `progress_color:`. Available colors are `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `bright-red`, `bright-green`, `bright-yellow`, `bright-blue`, `bright-magenta`, `bright-cyan`, and `bright-white`.
+
+```bash
+neo4j_bolt dump --color magenta -o database.dump
+neo4j_bolt load --color bright-blue database.dump
+```
+
 The `0, 1, 2, ...` IDs are synthetic dump-local IDs. Database-internal IDs and element IDs are never written to the persistent format. Dumping keeps the count, node, and relationship reads in one transaction, so the driver-provided entity identity used to connect the two streamed result sets stays within Neo4j's transaction-scoped identity guarantee. To keep dump numbering deterministic, ordering uses `elementId()` on modern Neo4j and an internal `id()` fallback only on Neo4j 4.4, where `elementId()` does not exist. Old Neo4jBolt dumps remain loadable.
 
 For relational loads, the adapter assigns a random temporary label and dump-ID property to imported nodes. After the nodes are committed it builds a temporary `neo4j_bolt_` index on that property, uses indexed lookups while creating relationships, drops the index, and removes the temporary metadata in batches. No database-internal identity is carried from one load transaction to another. Loading a relational dump therefore requires permission to create and drop an index.
@@ -175,8 +182,8 @@ The `neo4j_bolt` executable retains these commands:
 | --- | --- |
 | `neo4j_bolt console` | Open an IRB console with Neo4jBolt loaded |
 | `neo4j_bolt clear --srsly` | Delete all nodes and relationships |
-| `neo4j_bolt dump` | Write the textual database dump |
-| `neo4j_bolt load [--force] [--batch-size N] PATH` | Load a textual dump |
+| `neo4j_bolt dump [--color COLOR]` | Write the textual database dump |
+| `neo4j_bolt load [--force] [--batch-size N] [--color COLOR] PATH` | Load a textual dump |
 | `neo4j_bolt index ls` | List constraints and indexes |
 | `neo4j_bolt index rm --force` | Remove all constraints and indexes |
 | `neo4j_bolt visualize` | Generate a GraphViz document |

@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    neo4j_bolt (0.4.2)
+    neo4j_bolt (0.4.3)
       gli (~> 2.22)
       neo4j-ruby-driver (= 6.2.1.beta.4)
       pry (~> 0.15)
