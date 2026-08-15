@@ -13,7 +13,7 @@ RSpec.describe Neo4jBolt do
 
   describe "public compatibility API" do
     it "has the prerelease version and configurable connection attributes" do
-      expect(Neo4jBolt::VERSION).to eq("0.4.1")
+      expect(Neo4jBolt::VERSION).to eq("0.4.2")
       expect(Neo4jBolt.bolt_host).to be_a(String)
       expect(Neo4jBolt.bolt_port).to be_a(Integer)
       expect(Neo4jBolt.bolt_verbosity).to be_a(Integer)
@@ -329,6 +329,30 @@ RSpec.describe Neo4jBolt do
       expect(dump_progress.string).to include("Dumping:", "Dumped:")
       expect(dumped.string).not_to include("Dumping:", "Dumped:")
       expect(dumped.string.lines).to all(match(/\A(?:n|r) /))
+    end
+
+    it "renders colored in-place progress when pretty mode is forced" do
+      previous_mode = ENV["NEO4J_BOLT_PROGRESS"]
+      previous_term = ENV["TERM"]
+      had_no_color = ENV.key?("NO_COLOR")
+      previous_no_color = ENV["NO_COLOR"]
+      ENV["NEO4J_BOLT_PROGRESS"] = "pretty"
+      ENV["TERM"] = "xterm-256color"
+      ENV.delete("NO_COLOR")
+
+      progress = StringIO.new
+      dump_database(StringIO.new, progress_io: progress)
+
+      expect(progress.string).to include("\r\e[2K", "\e[36m", "\e[32m", "✓")
+      expect(progress.string.count("\n")).to eq(1)
+    ensure
+      previous_mode.nil? ? ENV.delete("NEO4J_BOLT_PROGRESS") : ENV["NEO4J_BOLT_PROGRESS"] = previous_mode
+      previous_term.nil? ? ENV.delete("TERM") : ENV["TERM"] = previous_term
+      if had_no_color
+        ENV["NO_COLOR"] = previous_no_color
+      else
+        ENV.delete("NO_COLOR")
+      end
     end
 
     it "halves rollback-safe transaction-memory batches and keeps the reduced size" do

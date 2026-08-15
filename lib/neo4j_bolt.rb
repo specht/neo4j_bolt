@@ -23,69 +23,184 @@ module Neo4jBolt
 
   class ProgressReporter
     UPDATE_INTERVAL = 0.5
+    BAR_WIDTH = 24
+    SPINNER = %w[⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏].freeze
+    ANSI = {
+      reset: "\e[0m",
+      bold: "\e[1m",
+      dim: "\e[2m",
+      cyan: "\e[36m",
+      green: "\e[32m",
+      yellow: "\e[33m"
+    }.freeze
 
     def initialize(io)
       @io = io
-      @tty = io && io.respond_to?(:tty?) && io.tty? && Neo4jBolt.bolt_verbosity.to_i.zero?
+      mode = ENV.fetch("NEO4J_BOLT_PROGRESS", "auto")
+      unless %w[auto pretty plain].include?(mode)
+        raise ArgumentError, "NEO4J_BOLT_PROGRESS must be auto, pretty, or plain"
+      end
+
+      detected_tty = io && io.respond_to?(:tty?) && io.tty? && Neo4jBolt.bolt_verbosity.to_i.zero?
+      @pretty = io && (mode == "pretty" || (mode == "auto" && detected_tty))
+      @color = @pretty && !ENV.key?("NO_COLOR") && (mode == "pretty" || ENV["TERM"] != "dumb")
       @last_update_at = nil
-      @line_width = 0
       @line_open = false
+      @spinner_index = 0
     end
 
-    def update(message, force: false)
+    def update(message, force: false, percent: nil)
       return unless @io
 
       now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       return if !force && @last_update_at && now - @last_update_at < UPDATE_INTERVAL
 
-      if @tty
-        padding = [@line_width - message.length, 0].max
-        @io.print "\r#{message}#{' ' * padding}"
-        @io.flush
-        @line_width = [@line_width, message.length].max
-        @line_open = true
+      if @pretty
+        percent ||= extract_percent(message)
+        render_line(activity_line(message, percent))
       else
         @io.puts message
       end
       @last_update_at = now
     end
 
-    def note(message)
+    def note(message, level: :info)
       return unless @io
 
-      clear_tty_line
-      @io.puts message
-      @last_update_at = nil
+      if @pretty && level == :info
+        update(message, force: true)
+      else
+        clear_line
+        if @pretty
+          icon = level == :warning ? color(:yellow, "!") : color(:cyan, "•")
+          @io.puts "#{icon} #{terminal_text(message)}"
+        else
+          @io.puts message
+        end
+        @last_update_at = nil
+      end
     end
 
     def finish(message)
       return unless @io
 
-      update(message, force: true)
-      if @tty
-        @io.puts
-        @line_width = 0
+      if @pretty
+        clear_line
+        label, detail = terminal_parts(message)
+        line = "#{color(:green, '✓')} #{color(:bold, label)}"
+        line += "  #{detail}" unless detail.empty?
+        @io.puts line
         @line_open = false
+      else
+        @io.puts message
       end
+      @last_update_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def close
-      return unless @io && @tty && @line_open
+      return unless @io && @pretty && @line_open
 
-      @io.puts
-      @line_width = 0
-      @line_open = false
+      clear_line
     end
 
     private
 
-    def clear_tty_line
-      return unless @tty && @line_open
+    def activity_line(message, percent)
+      label, detail = terminal_parts(message, strip_percent: !percent.nil?)
+      spinner = SPINNER[@spinner_index % SPINNER.length]
+      @spinner_index += 1
 
-      @io.print "\r#{' ' * @line_width}\r"
+      parts = [color(:cyan, spinner), color(:bold, label)]
+      if percent
+        percent = [[percent.to_i, 0].max, 100].min
+        parts << progress_bar(percent)
+        parts << color(:bold, format("%3d%%", percent))
+      end
+      parts << detail unless detail.empty?
+      parts.join("  ")
+    end
+
+    def progress_bar(percent)
+      filled = (percent * BAR_WIDTH / 100.0).round
+      empty = BAR_WIDTH - filled
+      "#{color(:cyan, '━' * filled)}#{color(:dim, '─' * empty)}"
+    end
+
+    def terminal_parts(message, strip_percent: false)
+      text = message.sub(/\.\.\.\z/, "")
+      label, detail = text.split(": ", 2)
+      label = pretty_label(label)
+      detail ||= ""
+      if strip_percent
+        detail = detail.sub(/\s+\(\d+%\)/, "")
+        detail = "" if detail.match?(/\A\d+%\z/)
+      end
+      detail = detail.gsub(/ \[batch (\d+)\]/) do
+        " #{color(:dim, '·')} batch #{format_count(Regexp.last_match(1))}"
+      end
+      detail = format_counts(detail)
+      detail = detail.gsub(", ", " #{color(:dim, '·')} ")
+      [label, detail]
+    end
+
+    def terminal_text(message)
+      label, detail = terminal_parts(message)
+      detail.empty? ? format_counts(label) : "#{label}: #{detail}"
+    end
+
+    def pretty_label(label)
+      case label
+      when "Building temporary relationship lookup index"
+        "Building lookup index"
+      when "Temporary relationship lookup index ready."
+        "Lookup index ready"
+      when "Cleaning temporary load metadata"
+        "Cleaning load metadata"
+      when "Temporary load metadata removed."
+        "Load metadata removed"
+      else
+        label
+      end
+    end
+
+    def extract_percent(message)
+      if (match = message.match(/\((\d+)%\)/)) || (match = message.match(/:\s*(\d+)%\z/))
+        return match[1].to_i
+      end
+
+      match = message.match(/:\s*(\d+)\/(\d+) nodes\z/)
+      return nil unless match
+
+      total = match[2].to_i
+      total.zero? ? 100 : match[1].to_i * 100 / total
+    end
+
+    def format_counts(text)
+      text.gsub(/\b\d{4,}\b/) { |number| format_count(number) }
+    end
+
+    def format_count(number)
+      number.to_s.reverse.scan(/.{1,3}/).join(",").reverse
+    end
+
+    def render_line(line)
+      @io.print "\r\e[2K#{line}"
       @io.flush
-      @line_width = 0
+      @line_open = true
+    end
+
+    def clear_line
+      return unless @pretty && @line_open
+
+      @io.print "\r\e[2K"
+      @io.flush
       @line_open = false
+    end
+
+    def color(style, text)
+      return text unless @color
+
+      "#{ANSI.fetch(style)}#{text}#{ANSI[:reset]}"
     end
   end
   private_constant :ProgressReporter
@@ -767,7 +882,8 @@ module Neo4jBolt
         batch_size = [batch_size, reduced_batch_size].min
         progress&.note(
           "Neo4j rejected a #{kind} batch of #{slice.size} for transaction memory; " \
-          "retrying with batches of #{batch_size}."
+          "retrying with batches of #{batch_size}.",
+          level: :warning
         )
       end
     end
@@ -822,7 +938,8 @@ module Neo4jBolt
 
         batch_size = [batch_size / 2, 1].max
         progress&.note(
-          "Neo4j rejected a cleanup batch for transaction memory; retrying with batches of #{batch_size}."
+          "Neo4j rejected a cleanup batch for transaction memory; retrying with batches of #{batch_size}.",
+          level: :warning
         )
       end
     end

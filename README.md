@@ -157,7 +157,7 @@ File.open("database.dump", "r") do |io|
 end
 ```
 
-Passing `progress_io:` is optional for the Ruby API. The CLI always reports dump/load progress on stderr, so dump data written to stdout remains safe to redirect or pipe. Terminal progress is updated in place; redirected stderr receives periodic progress lines.
+Passing `progress_io:` is optional for the Ruby API. The CLI always reports dump/load progress on stderr, so dump data written to stdout remains safe to redirect or pipe. In `auto` mode a terminal gets a colored, in-place progress bar while redirected stderr receives periodic plain-text progress lines. Set `NEO4J_BOLT_PROGRESS=pretty` to force the terminal display through a container or other wrapper that hides the TTY, or `NEO4J_BOLT_PROGRESS=plain` to force log-friendly output. `NO_COLOR` disables colors without disabling the in-place display.
 
 The `0, 1, 2, ...` IDs are synthetic dump-local IDs. Database-internal IDs and element IDs are never written to the persistent format. Dumping keeps the count, node, and relationship reads in one transaction, so the driver-provided entity identity used to connect the two streamed result sets stays within Neo4j's transaction-scoped identity guarantee. To keep dump numbering deterministic, ordering uses `elementId()` on modern Neo4j and an internal `id()` fallback only on Neo4j 4.4, where `elementId()` does not exist. Old Neo4jBolt dumps remain loadable.
 
