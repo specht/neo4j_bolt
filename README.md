@@ -4,14 +4,14 @@ Neo4jBolt 0.4 is a small compatibility and convenience layer for Ruby applicatio
 
 Neo4jBolt no longer implements the Bolt wire protocol itself.
 
-`0.4.4` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
+`0.4.5` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
 
 ## Installation
 
 For this prerelease, specify the version explicitly:
 
 ```ruby
-gem "neo4j_bolt", "0.4.4"
+gem "neo4j_bolt", "0.4.5"
 ```
 
 Then run `bundle install`. A running Neo4j database is required.
@@ -26,17 +26,20 @@ Neo4jBolt.bolt_port = 7687
 Neo4jBolt.bolt_verbosity = 0
 ```
 
-Authentication and database selection can use the standard Neo4j client environment variables:
+The connection endpoint, authentication, and database selection can use the standard Neo4j client environment variables:
 
 ```bash
+export NEO4J_URI=neo4j://localhost:7687
 export NEO4J_USERNAME=neo4j
 export NEO4J_PASSWORD=secret
 export NEO4J_DATABASE=neo4j
 ```
 
-They are read when `neo4j_bolt` is loaded. Explicit Ruby configuration overrides those defaults:
+They are read when `neo4j_bolt` is loaded. `NEO4J_URI` accepts `neo4j://HOST[:PORT]` and `bolt://HOST[:PORT]` endpoint notation; Neo4jBolt uses the host and port while retaining its existing direct Bolt connection behavior. The default port is 7687. Explicit Ruby configuration overrides those defaults:
 
 ```ruby
+Neo4jBolt.bolt_host = "localhost"
+Neo4jBolt.bolt_port = 7687
 Neo4jBolt.bolt_username = "neo4j"
 Neo4jBolt.bolt_password = "secret"
 Neo4jBolt.bolt_database = "movies"
@@ -186,7 +189,7 @@ neo4j_bolt load --color bright-blue database.dump
 
 The `0, 1, 2, ...` IDs are synthetic dump-local IDs. Database-internal IDs and element IDs are never written to the persistent format. Dumping keeps the count, node, and relationship reads in one transaction, so the driver-provided entity identity used to connect the two streamed result sets stays within Neo4j's transaction-scoped identity guarantee. To keep dump numbering deterministic, ordering uses `elementId()` on modern Neo4j and an internal `id()` fallback only on Neo4j 4.4, where `elementId()` does not exist. Old Neo4jBolt dumps remain loadable.
 
-For relational loads, the adapter assigns a random temporary label and dump-ID property to imported nodes. After the nodes are committed it builds a temporary `neo4j_bolt_` index on that property, uses indexed lookups while creating relationships, drops the index, and removes the temporary metadata in batches. No database-internal identity is carried from one load transaction to another. Loading a relational dump therefore requires permission to create and drop an index.
+For relational loads, the adapter assigns a random temporary label and the fixed reserved property `__neo4j_bolt_load_id` to imported nodes. After the nodes are committed it builds a temporary `neo4j_bolt_` index on that property, uses indexed lookups while creating relationships, drops the index, and removes the temporary metadata in batches. The fixed property key is reused by every load instead of registering a new random property-key token each time. Neo4j can keep the property key registered after all values have been removed, so it may remain visible in Browser's property-key list; no imported node retains the property after successful cleanup. Relational loads refuse to run if the dump itself, or existing data during `force_append`, currently uses the reserved property. No database-internal identity is carried from one load transaction to another. Loading a relational dump therefore requires permission to create and drop an index.
 
 Loads start with batches of 5,000 records by default. This is an initial ceiling rather than a claimed optimum: if Neo4j returns a transaction-memory/resource error whose server semantics guarantee rollback, the loader halves the failed batch and retries it, then keeps the smaller size for the rest of that phase. Node and relationship phases adapt independently. Other errors are not retried, because a generic connection failure cannot safely prove that a `CREATE` transaction did not commit. Callers can change the initial ceiling with `initial_batch_size:`; the CLI exposes the same setting as `--batch-size`.
 
@@ -206,7 +209,7 @@ The `neo4j_bolt` executable retains these commands:
 | `neo4j_bolt index rm --force` | Remove all constraints and indexes |
 | `neo4j_bolt visualize` | Generate a GraphViz document |
 
-Use `--host HOST:PORT`, `--username USER`, `--password PASSWORD`, and `--database DATABASE` to override connection settings. Username, password, and database otherwise inherit `NEO4J_USERNAME`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE`. Prefer the password environment variable for routine use because command-line arguments may be visible in shell history or process listings. `gli` remains a runtime dependency for the CLI, and `pry` remains for the separate `bin/console` executable.
+Use `--host HOST:PORT`, `--username USER`, `--password PASSWORD`, and `--database DATABASE` to override connection settings. Host and port otherwise inherit `NEO4J_URI` when present, falling back to `localhost:7687`; username, password, and database inherit `NEO4J_USERNAME`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE`. Prefer the password environment variable for routine use because command-line arguments may be visible in shell history or process listings. `gli` remains a runtime dependency for the CLI, and `pry` remains for the separate `bin/console` executable.
 
 ## Tested Neo4j versions
 
@@ -216,7 +219,7 @@ The same complete integration suite is run against these exact Community images:
 - `neo4j:5.26.28-community`
 - `neo4j:2026.06.0-community`
 
-No compatibility beyond this matrix is claimed for `0.4.4`.
+No compatibility beyond this matrix is claimed for `0.4.5`.
 
 Run one modern LTS target:
 
@@ -254,13 +257,15 @@ To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HO
 | CLI commands | Preserved |
 | `BoltSocket`, `BoltBuffer`, protocol markers/state/parser/packer | Intentionally removed private implementation details |
 
-## 0.4.4 migration notes
+## 0.4.5 migration notes
 
 - Ruby 3.4 or newer is required; Ruby 2.x/3.0–3.3 applications should stay on 0.3.x until upgraded.
 - The exact prerelease upstream dependency is pinned while no stable `neo4j-ruby-driver` 6.2.x exists.
 - Connections are pooled and safe for concurrent use instead of one mutable socket per including object.
-- Basic authentication and database selection are now exposed through `bolt_username`, `bolt_password`, and `bolt_database`, with `NEO4J_USERNAME`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE` as environment defaults.
-- TLS, routing, URI schemes, and other upstream-driver configuration are still not exposed through the compatibility API.
+- `NEO4J_URI` now supplies the default host and port for `bolt://` and `neo4j://` endpoint notation; an explicit CLI `--host` or Ruby `bolt_host`/`bolt_port` setting overrides it.
+- Basic authentication and database selection are exposed through `bolt_username`, `bolt_password`, and `bolt_database`, with `NEO4J_USERNAME`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE` as environment defaults.
+- TLS, routing behavior, URI query parameters, and other upstream-driver configuration are still not exposed through the compatibility API.
+- Relational loads reuse one reserved `__neo4j_bolt_load_id` property key while retaining the existing indexed lookup algorithm, preventing a new property-key token from being registered on every load.
 - `BoltSocket`, `BoltBuffer`, `ServerState`, `BoltMarker`, `UnexpectedServerResponse`, `State`, and `CypherError` were undocumented wire internals and are removed.
 
 ## Development

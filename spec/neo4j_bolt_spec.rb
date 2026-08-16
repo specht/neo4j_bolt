@@ -13,7 +13,7 @@ RSpec.describe Neo4jBolt do
 
   describe "public compatibility API" do
     it "has the prerelease version and configurable connection attributes" do
-      expect(Neo4jBolt::VERSION).to eq("0.4.4")
+      expect(Neo4jBolt::VERSION).to eq("0.4.5")
       expect(Neo4jBolt.bolt_host).to be_a(String)
       expect(Neo4jBolt.bolt_port).to be_a(Integer)
       expect(Neo4jBolt.bolt_verbosity).to be_a(Integer)
@@ -39,6 +39,30 @@ RSpec.describe Neo4jBolt do
       )
       expect(status).to be_success, stderr
       expect(JSON.parse(stdout)).to eq(["env-user", "env-password", "env-database"])
+    end
+
+    it "loads host and port defaults from NEO4J_URI" do
+      stdout, stderr, status = Open3.capture3(
+        { "NEO4J_URI" => "neo4j://workspace-neo4j:8765" },
+        RbConfig.ruby,
+        "-rbundler/setup",
+        "-I#{File.expand_path("../lib", __dir__)}",
+        "-rneo4j_bolt",
+        "-e",
+        "print JSON.generate([Neo4jBolt.bolt_host, Neo4jBolt.bolt_port])"
+      )
+      expect(status).to be_success, stderr
+      expect(JSON.parse(stdout)).to eq(["workspace-neo4j", 8765])
+    end
+
+    it "uses port 7687 when NEO4J_URI omits the port" do
+      stdout, stderr, status = Open3.capture3(
+        { "NEO4J_URI" => "bolt://workspace-neo4j" },
+        RbConfig.ruby, "-rbundler/setup", "-I#{File.expand_path("../lib", __dir__)}",
+        "-rneo4j_bolt", "-e", "print Neo4jBolt.bolt_port"
+      )
+      expect(status).to be_success, stderr
+      expect(stdout).to eq("7687")
     end
 
     it "works both as an included module and directly on Neo4jBolt" do
@@ -344,6 +368,7 @@ RSpec.describe Neo4jBolt do
       )
       expect(load_progress.string).to include("Reading dump:", "Loading:", "Loaded:")
       expect(schema_names("SHOW INDEXES").grep(/^neo4j_bolt_load_/)).to be_empty
+      expect(neo4j_query_expect_one("MATCH (n) WHERE n.`__neo4j_bolt_load_id` IS NOT NULL RETURN count(n) AS count")["count"]).to eq(0)
 
       dumped = StringIO.new
       dump_progress = StringIO.new
@@ -351,6 +376,36 @@ RSpec.describe Neo4jBolt do
       expect(dump_progress.string).to include("Dumping:", "Dumped:")
       expect(dumped.string).not_to include("Dumping:", "Dumped:")
       expect(dumped.string.lines).to all(match(/\A(?:n|r) /))
+    end
+
+    it "reuses the fixed reserved load property across relational loads" do
+      2.times do
+        load_database_dump(StringIO.new(old_dump))
+        count = neo4j_query_expect_one(
+          "MATCH (n) WHERE n.`__neo4j_bolt_load_id` IS NOT NULL RETURN count(n) AS count"
+        )["count"]
+        expect(count).to eq(0)
+        neo4j_query("MATCH (n) DETACH DELETE n")
+      end
+    end
+
+    it "refuses a relational dump that uses the reserved load property" do
+      conflicting_dump = old_dump.sub(
+        '"marker":1',
+        '"__neo4j_bolt_load_id":99,"marker":1'
+      )
+      expect do
+        load_database_dump(StringIO.new(conflicting_dump))
+      end.to raise_error(Neo4jBolt::Error, /reserved Neo4jBolt load property/)
+      expect(neo4j_query_expect_one("MATCH (n) RETURN count(n) AS count")["count"]).to eq(0)
+    end
+
+    it "refuses force-appending when existing data uses the reserved load property" do
+      neo4j_query("CREATE (:Existing {`__neo4j_bolt_load_id`: 123})")
+      expect do
+        load_database_dump(StringIO.new(old_dump), force_append: true)
+      end.to raise_error(Neo4jBolt::Error, /reserved Neo4jBolt load property/)
+      expect(neo4j_query_expect_one("MATCH (n) RETURN count(n) AS count")["count"]).to eq(1)
     end
 
     it "renders colored in-place progress when pretty mode is forced" do
@@ -520,7 +575,36 @@ RSpec.describe Neo4jBolt do
       )
       expect(status).to be_success, stderr
       expect(stdout).to include("console", "clear", "dump", "load", "index", "visualize")
-      expect(stdout).to include("--username", "--password", "--database")
+      expect(stdout).to include("--host", "NEO4J_URI", "--username", "--password", "--database")
+    end
+
+    it "uses NEO4J_URI for the CLI host default and lets --host override it" do
+      cli = File.expand_path("../bin/neo4j_bolt", __dir__)
+      auth_env = {
+        "NEO4J_USERNAME" => Neo4jBolt.bolt_username,
+        "NEO4J_PASSWORD" => Neo4jBolt.bolt_password,
+        "NEO4J_DATABASE" => Neo4jBolt.bolt_database
+      }
+
+      stdout, stderr, status = Open3.capture3(
+        auth_env.merge("NEO4J_URI" => "neo4j://#{Neo4jBolt.bolt_host}:#{Neo4jBolt.bolt_port}"),
+        RbConfig.ruby,
+        cli,
+        "dump"
+      )
+      expect(status).to be_success, stderr
+      expect(stdout).to eq("")
+
+      stdout, stderr, status = Open3.capture3(
+        auth_env.merge("NEO4J_URI" => "bolt://127.0.0.1:1"),
+        RbConfig.ruby,
+        cli,
+        "--host",
+        "#{Neo4jBolt.bolt_host}:#{Neo4jBolt.bolt_port}",
+        "dump"
+      )
+      expect(status).to be_success, stderr
+      expect(stdout).to eq("")
     end
   end
 

@@ -4,6 +4,7 @@ require "json"
 require "securerandom"
 require "set"
 require "thread"
+require "uri"
 require "neo4j/driver"
 require "neo4j_bolt/version"
 
@@ -18,8 +19,9 @@ module Neo4jBolt
   LOAD_MEMORY_GQL_STATUSES = %w[51N72 51N73].freeze
   LOAD_PROGRESS_STEP = 5_000
   DUMP_PROGRESS_STEP = 1_000
+  LOAD_ID_PROPERTY = "__neo4j_bolt_load_id"
   private_constant :LOAD_MEMORY_ERROR_CODES, :LOAD_MEMORY_GQL_STATUSES,
-                   :LOAD_PROGRESS_STEP, :DUMP_PROGRESS_STEP
+                   :LOAD_PROGRESS_STEP, :DUMP_PROGRESS_STEP, :LOAD_ID_PROPERTY
 
   class ProgressReporter
     UPDATE_INTERVAL = 0.5
@@ -396,8 +398,29 @@ module Neo4jBolt
     end
   end
 
-  self.bolt_host = "localhost"
-  self.bolt_port = 7687
+  neo4j_uri = ENV["NEO4J_URI"]
+  if neo4j_uri.nil? || neo4j_uri.empty?
+    self.bolt_host = "localhost"
+    self.bolt_port = 7687
+  else
+    begin
+      parsed_neo4j_uri = URI.parse(neo4j_uri)
+    rescue URI::InvalidURIError => error
+      raise Error, "Invalid NEO4J_URI: #{error.message}"
+    end
+
+    unless %w[bolt neo4j].include?(parsed_neo4j_uri.scheme) && parsed_neo4j_uri.host
+      raise Error, "NEO4J_URI must be a bolt:// or neo4j:// URI with a host"
+    end
+    unless parsed_neo4j_uri.userinfo.nil? &&
+           ["", "/"].include?(parsed_neo4j_uri.path.to_s) &&
+           parsed_neo4j_uri.query.nil? && parsed_neo4j_uri.fragment.nil?
+      raise Error, "NEO4J_URI may only contain scheme, host, and port"
+    end
+
+    self.bolt_host = parsed_neo4j_uri.host
+    self.bolt_port = parsed_neo4j_uri.port || 7687
+  end
   self.bolt_verbosity = 0
   self.bolt_username = ENV["NEO4J_USERNAME"]
   self.bolt_password = ENV["NEO4J_PASSWORD"]
@@ -650,12 +673,32 @@ module Neo4jBolt
 
     temporary_token = SecureRandom.hex(12)
     temporary_label = "__neo4j_bolt_load_#{temporary_token}"
-    temporary_id_property = "__neo4j_bolt_load_id_#{temporary_token}"
+    temporary_id_property = LOAD_ID_PROPERTY
     temporary_index = "neo4j_bolt_load_#{temporary_token}"
     quoted_temporary_label = quote_identifier(temporary_label)
     quoted_temporary_id = quote_identifier(temporary_id_property)
     quoted_temporary_index = quote_identifier(temporary_index)
     needs_relationship_lookup = total_relationships.positive?
+
+    if needs_relationship_lookup
+      dump_uses_reserved_property = node_batches.each_value.any? do |nodes|
+        nodes.any? { |node| node.fetch("properties", {}).key?(LOAD_ID_PROPERTY) }
+      end
+      if dump_uses_reserved_property
+        raise Error, "Dump contains reserved Neo4jBolt load property #{LOAD_ID_PROPERTY.inspect}."
+      end
+
+      if force_append
+        reserved_property_in_use = neo4j_query(
+          "MATCH (n) WHERE n.#{quoted_temporary_id} IS NOT NULL RETURN 1 AS present LIMIT 1"
+        ).any?
+        if reserved_property_in_use
+          raise Error,
+                "Database contains reserved Neo4jBolt load property #{LOAD_ID_PROPERTY.inspect}."
+        end
+      end
+    end
+
     loaded_nodes = 0
     loaded_relationships = 0
     index_created = false
