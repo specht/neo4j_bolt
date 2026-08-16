@@ -22,12 +22,18 @@ class App
 
     flag [:v, :verbosity], :default_value => 0
     flag [:h, :host], :default_value => 'localhost:7687'
+    flag [:u, :username], :default_value => nil, :desc => 'Neo4j username (default: NEO4J_USERNAME)'
+    flag [:p, :password], :default_value => nil, :desc => 'Neo4j password (default: NEO4J_PASSWORD)'
+    flag [:d, :database], :default_value => nil, :desc => 'Neo4j database (default: NEO4J_DATABASE)'
 
     pre do |global_options, command, options, args|
         host = global_options[:host]
         Neo4jBolt.bolt_host = host.split(':').first
         Neo4jBolt.bolt_port = host.split(':').last.to_i
         Neo4jBolt.bolt_verbosity = global_options[:verbosity].to_i
+        Neo4jBolt.bolt_username = global_options[:username] unless global_options[:username].nil?
+        Neo4jBolt.bolt_password = global_options[:password] unless global_options[:password].nil?
+        Neo4jBolt.bolt_database = global_options[:database] unless global_options[:database].nil?
         true
     end
 

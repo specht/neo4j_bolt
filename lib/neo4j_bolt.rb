@@ -335,8 +335,20 @@ module Neo4jBolt
         host = "[#{host}]" if host.include?(":") && !host.start_with?("[")
         Neo4j::Driver::GraphDatabase.driver(
           "bolt://#{host}:#{Neo4jBolt.bolt_port}",
-          Neo4j::Driver::AuthTokens.none
+          authentication_token
         )
+      end
+
+      def authentication_token
+        username = Neo4jBolt.bolt_username
+        password = Neo4jBolt.bolt_password
+        return Neo4j::Driver::AuthTokens.none if username.nil? && password.nil?
+
+        if username.nil? || password.nil?
+          raise Error, "Neo4j username and password must either both be set or both be unset"
+        end
+
+        Neo4j::Driver::AuthTokens.basic(username, password)
       end
 
       def leases
@@ -354,8 +366,8 @@ module Neo4jBolt
   end
 
   class << self
-    attr_reader :bolt_host, :bolt_port
-    attr_accessor :bolt_verbosity
+    attr_reader :bolt_host, :bolt_port, :bolt_username, :bolt_password
+    attr_accessor :bolt_verbosity, :bolt_database
 
     def bolt_host=(host)
       reconfigure_driver if defined?(@bolt_host) && @bolt_host != host
@@ -365,6 +377,16 @@ module Neo4jBolt
     def bolt_port=(port)
       reconfigure_driver if defined?(@bolt_port) && @bolt_port != port
       @bolt_port = port
+    end
+
+    def bolt_username=(username)
+      reconfigure_driver if defined?(@bolt_username) && @bolt_username != username
+      @bolt_username = username
+    end
+
+    def bolt_password=(password)
+      reconfigure_driver if defined?(@bolt_password) && @bolt_password != password
+      @bolt_password = password
     end
 
     private
@@ -377,9 +399,22 @@ module Neo4jBolt
   self.bolt_host = "localhost"
   self.bolt_port = 7687
   self.bolt_verbosity = 0
+  self.bolt_username = ENV["NEO4J_USERNAME"]
+  self.bolt_password = ENV["NEO4J_PASSWORD"]
+  self.bolt_database = ENV["NEO4J_DATABASE"]
 
   # Keep both `include Neo4jBolt` and direct module-style calls working.
   extend self
+
+  def with_session(driver)
+    database = Neo4jBolt.bolt_database
+    if database.nil?
+      driver.session { |session| yield session }
+    else
+      driver.session(database: database) { |session| yield session }
+    end
+  end
+  private :with_session
 
   def neo4j_query(query, data = {}, &block)
     validate_parameters!(data)
@@ -390,7 +425,7 @@ module Neo4jBolt
       run_and_convert(context.transaction, query, data, &block)
     else
       DriverRegistry.with_driver do |driver|
-        driver.session do |session|
+        with_session(driver) do |session|
           run_and_convert(session, query, data, &block)
         end
       end
@@ -430,7 +465,7 @@ module Neo4jBolt
     end
 
     DriverRegistry.with_driver do |driver|
-      driver.session do |session|
+      with_session(driver) do |session|
         upstream_transaction = session.begin_transaction
         context = TransactionContext.new(
           session: session, transaction: upstream_transaction, depth: 1, rollback_only: false

@@ -33,6 +33,9 @@ run_suite() {
     local safe_image="${image//[^a-zA-Z0-9]/_}"
     local name="neo4j_bolt_test_${$}_${RANDOM}_${safe_image}"
     local port=""
+    local username="neo4j"
+    local password="neo4j-bolt-test-password"
+    local database="neo4j"
 
     echo
     echo "==> Testing against ${image}"
@@ -40,7 +43,7 @@ run_suite() {
         --detach \
         --rm \
         --name "$name" \
-        --env NEO4J_AUTH=none \
+        --env "NEO4J_AUTH=${username}/${password}" \
         --publish 127.0.0.1::7687 \
         "$image" >/dev/null
     ACTIVE_CONTAINERS+=("$name")
@@ -56,6 +59,9 @@ run_suite() {
 
     if ! NEO4J_BOLT_TEST_HOST=localhost \
          NEO4J_BOLT_TEST_PORT="$port" \
+         NEO4J_USERNAME="$username" \
+         NEO4J_PASSWORD="$password" \
+         NEO4J_DATABASE="$database" \
          NEO4J_BOLT_WAIT_ATTEMPTS=60 \
          NEO4J_BOLT_WAIT_DELAY=1 \
          bundle exec ruby -Ilib -e \
@@ -66,6 +72,9 @@ run_suite() {
 
     NEO4J_BOLT_TEST_HOST=localhost \
     NEO4J_BOLT_TEST_PORT="$port" \
+    NEO4J_USERNAME="$username" \
+    NEO4J_PASSWORD="$password" \
+    NEO4J_DATABASE="$database" \
     bundle exec rspec
 
     docker rm --force "$name" >/dev/null

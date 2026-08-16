@@ -4,14 +4,14 @@ Neo4jBolt 0.4 is a small compatibility and convenience layer for Ruby applicatio
 
 Neo4jBolt no longer implements the Bolt wire protocol itself.
 
-`0.4.0` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
+`0.4.4` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
 
 ## Installation
 
 For this prerelease, specify the version explicitly:
 
 ```ruby
-gem "neo4j_bolt", "0.4.0"
+gem "neo4j_bolt", "0.4.4"
 ```
 
 Then run `bundle install`. A running Neo4j database is required.
@@ -26,6 +26,24 @@ Neo4jBolt.bolt_port = 7687
 Neo4jBolt.bolt_verbosity = 0
 ```
 
+Authentication and database selection can use the standard Neo4j client environment variables:
+
+```bash
+export NEO4J_USERNAME=neo4j
+export NEO4J_PASSWORD=secret
+export NEO4J_DATABASE=neo4j
+```
+
+They are read when `neo4j_bolt` is loaded. Explicit Ruby configuration overrides those defaults:
+
+```ruby
+Neo4jBolt.bolt_username = "neo4j"
+Neo4jBolt.bolt_password = "secret"
+Neo4jBolt.bolt_database = "movies"
+```
+
+If both username and password are unset, Neo4jBolt keeps the existing unauthenticated connection behavior. If only one is set, the first query raises `Neo4jBolt::Error`. Leaving the database unset lets Neo4j choose the user's/server's default database.
+
 Applications can include the module as before:
 
 ```ruby
@@ -36,7 +54,7 @@ They can also extend another object or call the convenience methods directly on 
 
 One lazily initialized upstream driver owns a thread-safe connection pool. Each standalone query uses a short-lived session and returns its connection to that pool after its result has been consumed. Queries from several Puma threads are not globally serialized.
 
-`cleanup_neo4j` safely retires the driver and its pool after active operations finish. A later query creates a new driver. Do not call cleanup from inside an active query or transaction on the same thread.
+`cleanup_neo4j` safely retires the driver and its pool after active operations finish. A later query creates a new driver. Changing host, port, username, or password also retires the pool so later connections use the new settings. Database selection is a session setting and therefore applies to newly opened sessions without rebuilding the driver. Do not call cleanup from inside an active query or transaction on the same thread.
 
 ## Running queries
 
@@ -188,7 +206,7 @@ The `neo4j_bolt` executable retains these commands:
 | `neo4j_bolt index rm --force` | Remove all constraints and indexes |
 | `neo4j_bolt visualize` | Generate a GraphViz document |
 
-Use `--host HOST:PORT` to select a server. `gli` remains a runtime dependency for the CLI, and `pry` remains for the separate `bin/console` executable.
+Use `--host HOST:PORT`, `--username USER`, `--password PASSWORD`, and `--database DATABASE` to override connection settings. Username, password, and database otherwise inherit `NEO4J_USERNAME`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE`. Prefer the password environment variable for routine use because command-line arguments may be visible in shell history or process listings. `gli` remains a runtime dependency for the CLI, and `pry` remains for the separate `bin/console` executable.
 
 ## Tested Neo4j versions
 
@@ -198,7 +216,7 @@ The same complete integration suite is run against these exact Community images:
 - `neo4j:5.26.28-community`
 - `neo4j:2026.06.0-community`
 
-No compatibility beyond this matrix is claimed for `0.4.0`.
+No compatibility beyond this matrix is claimed for `0.4.4`.
 
 Run one modern LTS target:
 
@@ -212,15 +230,16 @@ Run the complete sequential matrix:
 bundle exec rake spec:matrix
 ```
 
-The harness creates uniquely named disposable containers with `NEO4J_AUTH=none`, dynamically publishes Bolt ports, waits by establishing a real driver/query connection, and cleans every container through shell traps. A developer does not need to start Neo4j manually.
+The harness creates uniquely named disposable containers with Basic authentication enabled, dynamically publishes Bolt ports, waits by establishing a real driver/query connection, and cleans every container through shell traps. A developer does not need to start Neo4j manually.
 
-To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HOST` and `NEO4J_BOLT_TEST_PORT`. The explicit port requirement protects real databases from the destructive integration suite.
+To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HOST` and `NEO4J_BOLT_TEST_PORT`. If it requires authentication or an explicit database, also set `NEO4J_USERNAME`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE`. The explicit port requirement protects real databases from the destructive integration suite.
 
 ## Compatibility inventory for 0.4
 
 | API | Status |
 | --- | --- |
 | `bolt_host`, `bolt_port`, `bolt_verbosity` | Preserved |
+| `bolt_username`, `bolt_password`, `bolt_database` | Additive authentication/database configuration |
 | Included/extended/module-style use | Preserved |
 | `neo4j_query`, including incremental block form | Preserved via adapter |
 | `neo4j_query_expect_one` | Preserved via adapter |
@@ -235,12 +254,13 @@ To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HO
 | CLI commands | Preserved |
 | `BoltSocket`, `BoltBuffer`, protocol markers/state/parser/packer | Intentionally removed private implementation details |
 
-## 0.4.0 migration notes
+## 0.4.4 migration notes
 
 - Ruby 3.4 or newer is required; Ruby 2.x/3.0–3.3 applications should stay on 0.3.x until upgraded.
 - The exact prerelease upstream dependency is pinned while no stable `neo4j-ruby-driver` 6.2.x exists.
 - Connections are pooled and safe for concurrent use instead of one mutable socket per including object.
-- TLS, routing, authentication, database selection, and other upstream-driver configuration are not newly exposed through the legacy three-setting API in this compatibility prerelease.
+- Basic authentication and database selection are now exposed through `bolt_username`, `bolt_password`, and `bolt_database`, with `NEO4J_USERNAME`, `NEO4J_PASSWORD`, and `NEO4J_DATABASE` as environment defaults.
+- TLS, routing, URI schemes, and other upstream-driver configuration are still not exposed through the compatibility API.
 - `BoltSocket`, `BoltBuffer`, `ServerState`, `BoltMarker`, `UnexpectedServerResponse`, `State`, and `CypherError` were undocumented wire internals and are removed.
 
 ## Development

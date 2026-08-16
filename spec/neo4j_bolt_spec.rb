@@ -13,10 +13,32 @@ RSpec.describe Neo4jBolt do
 
   describe "public compatibility API" do
     it "has the prerelease version and configurable connection attributes" do
-      expect(Neo4jBolt::VERSION).to eq("0.4.3")
+      expect(Neo4jBolt::VERSION).to eq("0.4.4")
       expect(Neo4jBolt.bolt_host).to be_a(String)
       expect(Neo4jBolt.bolt_port).to be_a(Integer)
       expect(Neo4jBolt.bolt_verbosity).to be_a(Integer)
+      expect(Neo4jBolt).to respond_to(
+        :bolt_username, :bolt_username=, :bolt_password, :bolt_password=,
+        :bolt_database, :bolt_database=
+      )
+    end
+
+    it "loads username, password, and database defaults from the standard environment variables" do
+      stdout, stderr, status = Open3.capture3(
+        {
+          "NEO4J_USERNAME" => "env-user",
+          "NEO4J_PASSWORD" => "env-password",
+          "NEO4J_DATABASE" => "env-database"
+        },
+        RbConfig.ruby,
+        "-rbundler/setup",
+        "-I#{File.expand_path("../lib", __dir__)}",
+        "-rneo4j_bolt",
+        "-e",
+        "print JSON.generate([Neo4jBolt.bolt_username, Neo4jBolt.bolt_password, Neo4jBolt.bolt_database])"
+      )
+      expect(status).to be_success, stderr
+      expect(JSON.parse(stdout)).to eq(["env-user", "env-password", "env-database"])
     end
 
     it "works both as an included module and directly on Neo4jBolt" do
@@ -401,6 +423,21 @@ RSpec.describe Neo4jBolt do
       expect(cleanup_neo4j).to be_nil
       expect(neo4j_query_expect_one("RETURN 2 AS value")["value"]).to eq(2)
     end
+
+    it "rejects incomplete basic-auth configuration before opening a connection" do
+      original_username = Neo4jBolt.bolt_username
+      original_password = Neo4jBolt.bolt_password
+
+      begin
+        Neo4jBolt.bolt_username = "neo4j"
+        Neo4jBolt.bolt_password = nil
+        expect { neo4j_query("RETURN 1") }
+          .to raise_error(Neo4jBolt::Error, /username and password must either both be set/)
+      ensure
+        Neo4jBolt.bolt_username = original_username
+        Neo4jBolt.bolt_password = original_password
+      end
+    end
   end
 
   describe "thread safety and pooling" do
@@ -483,6 +520,7 @@ RSpec.describe Neo4jBolt do
       )
       expect(status).to be_success, stderr
       expect(stdout).to include("console", "clear", "dump", "load", "index", "visualize")
+      expect(stdout).to include("--username", "--password", "--database")
     end
   end
 
