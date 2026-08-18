@@ -594,10 +594,12 @@ module Neo4jBolt
     nil
   end
 
-  def dump_database(io, progress_io: nil, progress_color: "cyan")
+  def dump_database(io, progress_io: nil, progress_color: "cyan", schema: true)
     progress = ProgressReporter.new(progress_io, color: progress_color)
     dumped_nodes = 0
     dumped_relationships = 0
+
+    dump_schema(io) if schema
 
     transaction do
       identity_function = dump_identity_function
@@ -655,7 +657,7 @@ module Neo4jBolt
   end
 
   def load_database_dump(io, force_append: false, progress_io: nil, progress_color: "cyan",
-                         initial_batch_size: LOAD_INITIAL_BATCH_SIZE)
+                         initial_batch_size: LOAD_INITIAL_BATCH_SIZE, schema: true)
     raise Error, "load_database_dump cannot run inside a transaction" if transaction_context
 
     initial_batch_size = Integer(initial_batch_size)
@@ -669,7 +671,12 @@ module Neo4jBolt
     progress = ProgressReporter.new(progress_io, color: progress_color)
     node_batches = Hash.new { |hash, key| hash[key] = [] }
     relationship_batches = Hash.new { |hash, key| hash[key] = [] }
-    total_nodes, total_relationships = parse_dump(io, node_batches, relationship_batches, progress)
+    total_nodes, total_relationships, schema_entries =
+      parse_dump(io, node_batches, relationship_batches, progress)
+
+    if !force_append && schema && !schema_entries.empty?
+      ensure_database_has_no_application_schema!
+    end
 
     temporary_token = SecureRandom.hex(12)
     temporary_label = "__neo4j_bolt_load_#{temporary_token}"
@@ -802,6 +809,10 @@ module Neo4jBolt
       raise cleanup_error if original_error.nil? && cleanup_error
     end
 
+    if schema && !schema_entries.empty?
+      restore_dump_schema(schema_entries, progress, if_not_exists: force_append)
+    end
+
     progress.finish("Loaded: #{loaded_nodes} nodes, #{loaded_relationships} relationships")
     nil
   ensure
@@ -927,6 +938,157 @@ module Neo4jBolt
     "`#{identifier.to_s.gsub("`", "``")}`"
   end
 
+  def dump_schema(io)
+    entries = []
+    constraint_names = Set.new
+
+    neo4j_query("SHOW CONSTRAINTS").each do |row|
+      kind = dump_constraint_kind(row["type"])
+      value = schema_dump_value(row, kind)
+      constraint_names << value.fetch(:name)
+      entries << [kind, value]
+    end
+
+    neo4j_query("SHOW INDEXES").each do |row|
+      next unless dumpable_property_index?(row, constraint_names)
+
+      entries << ["i", schema_dump_value(row, "i")]
+    end
+
+    kind_order = { "u" => 0, "k" => 1, "i" => 2 }
+    entries.sort_by { |kind, value| [kind_order.fetch(kind), value.fetch(:name)] }.each do |kind, value|
+      io.puts "#{kind} #{JSON.generate(value)}"
+    end
+  end
+
+  def dump_constraint_kind(type)
+    case type
+    when "UNIQUENESS", "NODE_PROPERTY_UNIQUENESS", "RELATIONSHIP_PROPERTY_UNIQUENESS"
+      "u"
+    when "NODE_KEY", "RELATIONSHIP_KEY"
+      "k"
+    else
+      raise Error,
+            "Cannot dump #{type.inspect} constraint; use schema: false (or --data-only in the CLI)"
+    end
+  end
+
+  def dumpable_property_index?(row, constraint_names)
+    return false if row["owningConstraint"]
+    return false if row["uniqueness"] == "UNIQUE"
+    return false if constraint_names.include?(row["name"])
+    return false if row["type"] == "LOOKUP"
+    return true if %w[BTREE RANGE].include?(row["type"])
+
+    raise Error,
+          "Cannot dump #{row['type'].inspect} index #{row['name'].inspect}; " \
+          "use schema: false (or --data-only in the CLI)"
+  end
+
+  def schema_dump_value(row, kind)
+    name = row["name"]
+    entity_type = row["entityType"]
+    labels_or_types = row["labelsOrTypes"]
+    properties = row["properties"]
+
+    unless name.is_a?(String) && !name.empty? &&
+           %w[NODE RELATIONSHIP].include?(entity_type) &&
+           labels_or_types.is_a?(Array) && labels_or_types.size == 1 &&
+           properties.is_a?(Array) && !properties.empty? &&
+           properties.all? { |property| property.is_a?(String) && !property.empty? }
+      raise Error, "Cannot dump #{kind} schema entry #{name.inspect}: unsupported schema shape"
+    end
+
+    {
+      name: name,
+      entity_type: entity_type,
+      label_or_type: labels_or_types.first,
+      properties: properties
+    }
+  end
+
+  def restore_dump_schema(entries, progress, if_not_exists: false)
+    progress&.note("Restoring schema: #{entries.size} entries...")
+    entries.each do |kind, value|
+      neo4j_query(schema_create_statement(kind, value, if_not_exists: if_not_exists))
+    end
+  end
+
+  def schema_create_statement(kind, value, if_not_exists: false)
+    validate_schema_dump_value!(kind, value)
+
+    name = quote_identifier(value.fetch("name"))
+    if_not_exists_clause = if_not_exists ? " IF NOT EXISTS" : ""
+    entity_type = value.fetch("entity_type")
+    label_or_type = quote_identifier(value.fetch("label_or_type"))
+    properties = value.fetch("properties")
+    variable = entity_type == "NODE" ? "n" : "r"
+    pattern = if entity_type == "NODE"
+                "(#{variable}:#{label_or_type})"
+              else
+                "()-[#{variable}:#{label_or_type}]-()"
+              end
+    property_expressions = properties.map { |property| "#{variable}.#{quote_identifier(property)}" }
+
+    case kind
+    when "u", "k"
+      property_expression = if property_expressions.one?
+                              property_expressions.first
+                            else
+                              "(#{property_expressions.join(', ')})"
+                            end
+      constraint_type = if kind == "u"
+                          "UNIQUE"
+                        elsif entity_type == "NODE"
+                          "NODE KEY"
+                        else
+                          "RELATIONSHIP KEY"
+                        end
+      "CREATE CONSTRAINT #{name}#{if_not_exists_clause} FOR #{pattern} " \
+        "REQUIRE #{property_expression} IS #{constraint_type}"
+    when "i"
+      "CREATE INDEX #{name}#{if_not_exists_clause} FOR #{pattern} ON (#{property_expressions.join(', ')})"
+    else
+      raise Error, "Unexpected schema dump kind: #{kind}"
+    end
+  end
+
+  def validate_schema_dump_value!(kind, value)
+    unless %w[u k i].include?(kind) && value.is_a?(Hash)
+      raise Error, "Invalid #{kind} schema dump entry"
+    end
+
+    name = value.fetch("name")
+    entity_type = value.fetch("entity_type")
+    label_or_type = value.fetch("label_or_type")
+    properties = value.fetch("properties")
+
+    return if name.is_a?(String) && !name.empty? &&
+              %w[NODE RELATIONSHIP].include?(entity_type) &&
+              label_or_type.is_a?(String) && !label_or_type.empty? &&
+              properties.is_a?(Array) && !properties.empty? &&
+              properties.all? { |property| property.is_a?(String) && !property.empty? }
+
+    raise Error, "Invalid #{kind} schema dump entry"
+  end
+
+  def ensure_database_has_no_application_schema!
+    constraints = neo4j_query("SHOW CONSTRAINTS").filter_map { |row| row["name"] }
+    indexes = neo4j_query("SHOW INDEXES").filter_map do |row|
+      next if row["type"] == "LOOKUP"
+      next if row["owningConstraint"]
+      next if row["uniqueness"] == "UNIQUE"
+
+      row["name"]
+    end
+    schema_names = constraints + indexes
+    return if schema_names.empty?
+
+    raise Error,
+          "There are constraints or indexes in this database, exiting now: " \
+          "#{schema_names.sort.join(', ')}"
+  end
+
   # Neo4j 4.4 has no elementId() function. Its id() fallback is used only for
   # deterministic in-process ordering; those database IDs never enter a dump.
   def dump_identity_function
@@ -939,6 +1101,7 @@ module Neo4jBolt
   def parse_dump(io, node_batches, relationship_batches, progress = nil)
     node_count = 0
     relationship_count = 0
+    schema_entries = []
     progress&.update("Reading dump: 0 nodes, 0 relationships", force: true)
 
     io.each_line.with_index(1) do |line, line_number|
@@ -946,16 +1109,22 @@ module Neo4jBolt
       next if line.empty?
 
       kind, json = line.split(" ", 2)
-      raise Error, "Invalid dump entry on line #{line_number}" unless json && %w[n r].include?(kind)
+      unless json && %w[n r u k i].include?(kind)
+        raise Error, "Invalid dump entry on line #{line_number}"
+      end
 
       value = JSON.parse(json)
-      if kind == "n"
+      case kind
+      when "n"
         labels = value.fetch("labels")
         node_batches[labels.sort] << value
         node_count += 1
-      else
+      when "r"
         relationship_batches[value.fetch("type")] << value
         relationship_count += 1
+      else
+        validate_schema_dump_value!(kind, value)
+        schema_entries << [kind, value]
       end
       if ((node_count + relationship_count) % LOAD_PROGRESS_STEP).zero?
         progress&.update("Reading dump: #{node_count} nodes, #{relationship_count} relationships")
@@ -965,7 +1134,7 @@ module Neo4jBolt
     end
 
     progress&.finish("Read dump: #{node_count} nodes, #{relationship_count} relationships")
-    [node_count, relationship_count]
+    [node_count, relationship_count, schema_entries]
   end
 
   def adaptive_each_slice(items, batch_size, progress, kind)

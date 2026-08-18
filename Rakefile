@@ -12,7 +12,7 @@ task :spec do
 end
 
 namespace :spec do
-  desc "Run the complete pinned Neo4j compatibility matrix"
+  desc "Run the complete pinned Neo4j Community/Enterprise compatibility matrix"
   task :matrix do
     sh "./script/test-matrix"
   end

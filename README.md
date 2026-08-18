@@ -4,14 +4,14 @@ Neo4jBolt 0.4 is a small compatibility and convenience layer for Ruby applicatio
 
 Neo4jBolt no longer implements the Bolt wire protocol itself.
 
-`0.4.5` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
+`0.5.0` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
 
 ## Installation
 
 For this prerelease, specify the version explicitly:
 
 ```ruby
-gem "neo4j_bolt", "0.4.5"
+gem "neo4j_bolt", "0.5.0"
 ```
 
 Then run `bundle install`. A running Neo4j database is required.
@@ -163,19 +163,43 @@ Managed entries retain the `neo4j_bolt_` prefix. Setup removes obsolete entries 
 
 ## Dump and load
 
-The textual format is unchanged:
+The textual format remains line-oriented and backwards compatible. Dumps now include supported schema entries by default:
 
 ```text
-n {"id":0,"labels":["Person"],"properties":{"name":"Ada"}}
-n {"id":1,"labels":["Person"],"properties":{"name":"Grace"}}
+u {"name":"person_email","entity_type":"NODE","label_or_type":"Person","properties":["email"]}
+k {"name":"person_id","entity_type":"NODE","label_or_type":"Person","properties":["id"]}
+i {"name":"person_name","entity_type":"NODE","label_or_type":"Person","properties":["name"]}
+n {"id":0,"labels":["Person"],"properties":{"id":1,"name":"Ada","email":"ada@example.test"}}
+n {"id":1,"labels":["Person"],"properties":{"id":2,"name":"Grace","email":"grace@example.test"}}
 r {"from":0,"to":1,"type":"KNOWS","properties":{"since":2024}}
 ```
+
+The record prefixes are:
+
+- `u` — property uniqueness constraint
+- `k` — node or relationship key constraint
+- `i` — ordinary property index
+- `n` — node
+- `r` — relationship
+
+Schema records preserve the schema entry name, whether it belongs to nodes or relationships, the label or relationship type, and the indexed/constrained properties. Constraint-backing indexes are not written as separate `i` records. Ordinary Neo4j 4.4 `BTREE` indexes and modern `RANGE` indexes are treated as the same portable property-index concept, so a logical dump can move between supported Neo4j generations. Neo4j's token lookup indexes are intentionally omitted because they are database infrastructure rather than application property indexes.
+
+Other constraint or index types are not silently dropped. A schema dump fails with a clear error instead; use data-only dumping if the application intentionally needs only nodes and relationships.
+
+Key constraints are dumped when they exist. Loading a dump containing a `k` record requires a Neo4j edition/version that can create that key; otherwise the load fails instead of silently weakening the schema.
 
 ```ruby
 File.open("database.dump", "w") { |io| dump_database(io, progress_io: $stderr) }
 File.open("database.dump", "r") do |io|
   load_database_dump(io, progress_io: $stderr)
 end
+```
+
+Schema dumping and restoration can be disabled explicitly:
+
+```ruby
+File.open("data.dump", "w") { |io| dump_database(io, schema: false) }
+File.open("database.dump", "r") { |io| load_database_dump(io, schema: false) }
 ```
 
 Passing `progress_io:` is optional for the Ruby API. The CLI always reports dump/load progress on stderr, so dump data written to stdout remains safe to redirect or pipe. In `auto` mode a terminal gets a colored, in-place progress bar while redirected stderr receives periodic plain-text progress lines. Set `NEO4J_BOLT_PROGRESS=pretty` to force the terminal display through a container or other wrapper that hides the TTY, or `NEO4J_BOLT_PROGRESS=plain` to force log-friendly output. `NO_COLOR` disables colors without disabling the in-place display.
@@ -187,13 +211,24 @@ neo4j_bolt dump --color magenta -o database.dump
 neo4j_bolt load --color bright-blue database.dump
 ```
 
-The `0, 1, 2, ...` IDs are synthetic dump-local IDs. Database-internal IDs and element IDs are never written to the persistent format. Dumping keeps the count, node, and relationship reads in one transaction, so the driver-provided entity identity used to connect the two streamed result sets stays within Neo4j's transaction-scoped identity guarantee. To keep dump numbering deterministic, ordering uses `elementId()` on modern Neo4j and an internal `id()` fallback only on Neo4j 4.4, where `elementId()` does not exist. Old Neo4jBolt dumps remain loadable.
+Both commands also accept `--data-only`. On `dump`, it omits `u`, `k`, and `i` records. On `load`, it accepts a full dump but ignores its schema records:
+
+```bash
+neo4j_bolt dump --data-only -o data.dump
+neo4j_bolt load --data-only database.dump
+```
+
+The `0, 1, 2, ...` IDs are synthetic dump-local IDs. Database-internal IDs and element IDs are never written to the persistent format. Dumping keeps the count, node, and relationship reads in one transaction, so the driver-provided entity identity used to connect the two streamed result sets stays within Neo4j's transaction-scoped identity guarantee. To keep dump numbering deterministic, ordering uses `elementId()` on modern Neo4j and an internal `id()` fallback only on Neo4j 4.4, where `elementId()` does not exist. Old Neo4jBolt dumps containing only `n` and `r` records remain loadable.
 
 For relational loads, the adapter assigns a random temporary label and the fixed reserved property `__neo4j_bolt_load_id` to imported nodes. After the nodes are committed it builds a temporary `neo4j_bolt_` index on that property, uses indexed lookups while creating relationships, drops the index, and removes the temporary metadata in batches. The fixed property key is reused by every load instead of registering a new random property-key token each time. Neo4j can keep the property key registered after all values have been removed, so it may remain visible in Browser's property-key list; no imported node retains the property after successful cleanup. Relational loads refuse to run if the dump itself, or existing data during `force_append`, currently uses the reserved property. No database-internal identity is carried from one load transaction to another. Loading a relational dump therefore requires permission to create and drop an index.
 
 Loads start with batches of 5,000 records by default. This is an initial ceiling rather than a claimed optimum: if Neo4j returns a transaction-memory/resource error whose server semantics guarantee rollback, the loader halves the failed batch and retries it, then keeps the smaller size for the rest of that phase. Node and relationship phases adapt independently. Other errors are not retried, because a generic connection failure cannot safely prove that a `CREATE` transaction did not commit. Callers can change the initial ceiling with `initial_batch_size:`; the CLI exposes the same setting as `--batch-size`.
 
-Loading requires an empty database unless `force_append: true` is passed. `load_database_dump` owns its batch transactions and therefore rejects being called from inside `transaction`.
+Loading data requires an empty database unless `force_append: true` is passed. For a dump that contains `u`, `k`, or `i` records and is being loaded with schema enabled, the target must also have no application constraints or property indexes. Neo4j's built-in token lookup indexes do not count as application schema. Old `n`/`r`-only dumps, and loads using `schema: false` / `--data-only`, keep the old data-only emptiness rule and may load into a data-empty database that already has application schema.
+
+With a normal full restore, the schema preflight happens before any data is written and the saved schema is created strictly after the data load. With `force_append: true`, existing schema is allowed and restored schema entries use `IF NOT EXISTS`. Existing constraints and indexes are never removed by dump loading.
+
+Data is loaded before schema records are restored, so bulk loading does not pay constraint/index maintenance costs for every inserted record. `load_database_dump` owns its batch transactions and therefore rejects being called from inside `transaction`.
 
 ## CLI
 
@@ -203,8 +238,8 @@ The `neo4j_bolt` executable retains these commands:
 | --- | --- |
 | `neo4j_bolt console` | Open an IRB console with Neo4jBolt loaded |
 | `neo4j_bolt clear --srsly` | Delete all nodes and relationships |
-| `neo4j_bolt dump [--color COLOR]` | Write the textual database dump |
-| `neo4j_bolt load [--force] [--batch-size N] [--color COLOR] PATH` | Load a textual dump |
+| `neo4j_bolt dump [--data-only] [--color COLOR]` | Write the textual database dump |
+| `neo4j_bolt load [--force] [--data-only] [--batch-size N] [--color COLOR] PATH` | Load a textual dump |
 | `neo4j_bolt index ls` | List constraints and indexes |
 | `neo4j_bolt index rm --force` | Remove all constraints and indexes |
 | `neo4j_bolt visualize` | Generate a GraphViz document |
@@ -213,13 +248,18 @@ Use `--host HOST:PORT`, `--username USER`, `--password PASSWORD`, and `--databas
 
 ## Tested Neo4j versions
 
-The same complete integration suite is run against these exact Community images:
+The complete integration suite is run against both Community and Enterprise for each pinned Neo4j generation:
 
 - `neo4j:4.4.48-community`
+- `neo4j:4.4.48-enterprise`
 - `neo4j:5.26.28-community`
+- `neo4j:5.26.28-enterprise`
 - `neo4j:2026.06.0-community`
+- `neo4j:2026.06.0-enterprise`
 
-No compatibility beyond this matrix is claimed for `0.4.5`.
+No compatibility beyond this matrix is claimed for `0.5.0`.
+
+Enterprise test containers are started with `NEO4J_ACCEPT_LICENSE_AGREEMENT=yes`. The Community targets verify that Community-compatible features remain portable; the Enterprise targets additionally exercise successful node-key dump/load instead of merely observing that Community rejects node keys.
 
 Run one modern LTS target:
 
@@ -257,7 +297,7 @@ To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HO
 | CLI commands | Preserved |
 | `BoltSocket`, `BoltBuffer`, protocol markers/state/parser/packer | Intentionally removed private implementation details |
 
-## 0.4.5 migration notes
+## 0.5.0 migration notes
 
 - Ruby 3.4 or newer is required; Ruby 2.x/3.0–3.3 applications should stay on 0.3.x until upgraded.
 - The exact prerelease upstream dependency is pinned while no stable `neo4j-ruby-driver` 6.2.x exists.

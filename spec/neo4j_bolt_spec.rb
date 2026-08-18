@@ -13,7 +13,7 @@ RSpec.describe Neo4jBolt do
 
   describe "public compatibility API" do
     it "has the prerelease version and configurable connection attributes" do
-      expect(Neo4jBolt::VERSION).to eq("0.4.5")
+      expect(Neo4jBolt::VERSION).to eq("0.5.0")
       expect(Neo4jBolt.bolt_host).to be_a(String)
       expect(Neo4jBolt.bolt_port).to be_a(Integer)
       expect(Neo4jBolt.bolt_verbosity).to be_a(Integer)
@@ -321,6 +321,208 @@ RSpec.describe Neo4jBolt do
       DUMP
     end
 
+    it "round-trips uniqueness constraints and ordinary property indexes by default" do
+      constraint_name = "neo4j_bolt_dump_User_email"
+      index_name = "neo4j_bolt_dump_Session_expires"
+      neo4j_query(
+        "CREATE CONSTRAINT `#{constraint_name}` IF NOT EXISTS " \
+        "FOR (n:User) REQUIRE n.email IS UNIQUE"
+      )
+      neo4j_query(
+        "CREATE INDEX `#{index_name}` IF NOT EXISTS " \
+        "FOR (n:Session) ON (n.expires)"
+      )
+      neo4j_query(
+        "CREATE (:User {email: 'ada@example.test'}), (:Session {expires: 123})"
+      )
+
+      dumped = StringIO.new
+      dump_database(dumped)
+      schema_entries = dumped.string.lines.filter_map do |line|
+        kind, json = line.split(" ", 2)
+        [kind, JSON.parse(json)] if %w[u k i].include?(kind)
+      end
+
+      expect(schema_entries).to include(
+        ["u", {
+          "name" => constraint_name,
+          "entity_type" => "NODE",
+          "label_or_type" => "User",
+          "properties" => ["email"]
+        }],
+        ["i", {
+          "name" => index_name,
+          "entity_type" => "NODE",
+          "label_or_type" => "Session",
+          "properties" => ["expires"]
+        }]
+      )
+      expect(schema_entries.count { |kind, _value| kind == "i" }).to eq(1)
+
+      neo4j_query("MATCH (n) DETACH DELETE n")
+      neo4j_query("DROP CONSTRAINT `#{constraint_name}` IF EXISTS")
+      neo4j_query("DROP INDEX `#{index_name}` IF EXISTS")
+
+      load_database_dump(StringIO.new(dumped.string))
+
+      expect(schema_names("SHOW CONSTRAINTS")).to include(constraint_name)
+      expect(schema_names("SHOW INDEXES")).to include(index_name)
+      expect(neo4j_query_expect_one("MATCH (n) RETURN count(n) AS count")["count"]).to eq(2)
+    ensure
+      neo4j_query("DROP CONSTRAINT `neo4j_bolt_dump_User_email` IF EXISTS")
+      neo4j_query("DROP INDEX `neo4j_bolt_dump_Session_expires` IF EXISTS")
+    end
+
+    it "can dump and load data without restoring schema" do
+      constraint_name = "neo4j_bolt_dump_DataOnly_id"
+      neo4j_query(
+        "CREATE CONSTRAINT `#{constraint_name}` IF NOT EXISTS " \
+        "FOR (n:DataOnly) REQUIRE n.id IS UNIQUE"
+      )
+      neo4j_query("CREATE (:DataOnly {id: 1})")
+
+      full_dump = StringIO.new
+      dump_database(full_dump)
+      expect(full_dump.string.lines.any? { |line| line.start_with?("u ") }).to be(true)
+
+      data_only_dump = StringIO.new
+      dump_database(data_only_dump, schema: false)
+      expect(data_only_dump.string.lines).to all(match(/\A(?:n|r) /))
+
+      neo4j_query("MATCH (n) DETACH DELETE n")
+      neo4j_query("DROP CONSTRAINT `#{constraint_name}` IF EXISTS")
+      load_database_dump(StringIO.new(full_dump.string), schema: false)
+
+      expect(schema_names("SHOW CONSTRAINTS")).not_to include(constraint_name)
+      expect(neo4j_query_expect_one("MATCH (n:DataOnly) RETURN count(n) AS count")["count"]).to eq(1)
+    ensure
+      neo4j_query("DROP CONSTRAINT `neo4j_bolt_dump_DataOnly_id` IF EXISTS")
+    end
+
+    it "requires an application-schema-empty target only for schema-bearing restores" do
+      schema_dump = <<~DUMP
+        u {"name":"dump_unique","entity_type":"NODE","label_or_type":"Imported","properties":["id"]}
+        n {"id":0,"labels":["Imported"],"properties":{"id":1}}
+      DUMP
+      neo4j_query("CREATE INDEX target_existing_index FOR (n:Existing) ON (n.value)")
+
+      expect do
+        load_database_dump(StringIO.new(schema_dump))
+      end.to raise_error(Neo4jBolt::Error, /constraints or indexes/)
+      expect(neo4j_query_expect_one("MATCH (n) RETURN count(n) AS count")["count"]).to eq(0)
+
+      expect do
+        load_database_dump(StringIO.new(schema_dump), schema: false)
+      end.not_to raise_error
+      expect(schema_names("SHOW CONSTRAINTS")).not_to include("dump_unique")
+
+      neo4j_query("MATCH (n) DETACH DELETE n")
+      expect { load_database_dump(StringIO.new(old_dump)) }.not_to raise_error
+    ensure
+      neo4j_query("MATCH (n) DETACH DELETE n")
+      neo4j_query("DROP CONSTRAINT dump_unique IF EXISTS")
+      neo4j_query("DROP INDEX target_existing_index IF EXISTS")
+    end
+
+    it "allows schema-bearing restores into existing schema when forced" do
+      schema_dump = <<~DUMP
+        u {"name":"dump_unique","entity_type":"NODE","label_or_type":"Imported","properties":["id"]}
+        n {"id":0,"labels":["Imported"],"properties":{"id":1}}
+      DUMP
+      neo4j_query("CREATE INDEX target_existing_index FOR (n:Existing) ON (n.value)")
+
+      expect do
+        load_database_dump(StringIO.new(schema_dump), force_append: true)
+      end.not_to raise_error
+      expect(schema_names("SHOW CONSTRAINTS")).to include("dump_unique")
+      expect(schema_names("SHOW INDEXES")).to include("target_existing_index")
+    ensure
+      neo4j_query("MATCH (n) DETACH DELETE n")
+      neo4j_query("DROP CONSTRAINT dump_unique IF EXISTS")
+      neo4j_query("DROP INDEX target_existing_index IF EXISTS")
+    end
+
+    it "uses strict schema creation for normal restores and idempotent creation for forced restores" do
+      value = {
+        "name" => "movie_id",
+        "entity_type" => "NODE",
+        "label_or_type" => "Movie",
+        "properties" => ["id"]
+      }
+
+      expect(send(:schema_create_statement, "k", value)).to eq(
+        "CREATE CONSTRAINT `movie_id` FOR (n:`Movie`) REQUIRE n.`id` IS NODE KEY"
+      )
+      expect(send(:schema_create_statement, "k", value, if_not_exists: true)).to eq(
+        "CREATE CONSTRAINT `movie_id` IF NOT EXISTS FOR (n:`Movie`) REQUIRE n.`id` IS NODE KEY"
+      )
+    end
+
+    it "rejects unsupported schema types instead of silently omitting them" do
+      expect { send(:dump_constraint_kind, "NODE_PROPERTY_EXISTENCE") }
+        .to raise_error(Neo4jBolt::Error, /Cannot dump/)
+      expect do
+        send(
+          :dumpable_property_index?,
+          { "name" => "search", "type" => "FULLTEXT" },
+          Set.new
+        )
+      end.to raise_error(Neo4jBolt::Error, /FULLTEXT/)
+      expect(
+        send(:dumpable_property_index?, { "name" => "lookup", "type" => "LOOKUP" }, Set.new)
+      ).to be(false)
+    end
+
+    it "builds portable key schema statements and round-trips node keys when available" do
+      key_value = {
+        "name" => "neo4j_bolt_dump_Movie_id",
+        "entity_type" => "NODE",
+        "label_or_type" => "Movie",
+        "properties" => ["id"]
+      }
+      expect(send(:schema_create_statement, "k", key_value)).to eq(
+        "CREATE CONSTRAINT `neo4j_bolt_dump_Movie_id` " \
+        "FOR (n:`Movie`) REQUIRE n.`id` IS NODE KEY"
+      )
+
+      edition = ENV["NEO4J_BOLT_TEST_EDITION"]
+      create_key = lambda do
+        neo4j_query(
+          "CREATE CONSTRAINT `neo4j_bolt_dump_Movie_id` IF NOT EXISTS " \
+          "FOR (n:Movie) REQUIRE n.id IS NODE KEY"
+        )
+      end
+
+      if edition == "community"
+        expect { create_key.call }.to raise_error(Neo4jBolt::Error)
+      else
+        begin
+          create_key.call
+        rescue Neo4jBolt::Error => error
+          raise if edition == "enterprise"
+
+          skip "Node keys are unavailable on this Neo4j edition: #{error.message.lines.first}"
+        end
+
+        neo4j_query("CREATE (:Movie {id: 1})")
+        dumped = StringIO.new
+        dump_database(dumped)
+        expect(
+          dumped.string.lines.any? do |line|
+            line.start_with?("k ") && line.include?(%("name":"neo4j_bolt_dump_Movie_id"))
+          end
+        ).to be(true)
+
+        neo4j_query("MATCH (n) DETACH DELETE n")
+        neo4j_query("DROP CONSTRAINT `neo4j_bolt_dump_Movie_id` IF EXISTS")
+        load_database_dump(StringIO.new(dumped.string))
+
+        expect(schema_names("SHOW CONSTRAINTS")).to include("neo4j_bolt_dump_Movie_id")
+      end
+    ensure
+      neo4j_query("DROP CONSTRAINT `neo4j_bolt_dump_Movie_id` IF EXISTS")
+    end
+
     it "preserves the textual n/r format with synthetic sequential IDs" do
       load_database_dump(StringIO.new(old_dump))
       dumped = StringIO.new
@@ -576,6 +778,17 @@ RSpec.describe Neo4jBolt do
       expect(status).to be_success, stderr
       expect(stdout).to include("console", "clear", "dump", "load", "index", "visualize")
       expect(stdout).to include("--host", "NEO4J_URI", "--username", "--password", "--database")
+
+      %w[dump load].each do |command|
+        command_stdout, command_stderr, command_status = Open3.capture3(
+          RbConfig.ruby,
+          File.expand_path("../bin/neo4j_bolt", __dir__),
+          command,
+          "--help"
+        )
+        expect(command_status).to be_success, command_stderr
+        expect(command_stdout).to include("--data-only")
+      end
     end
 
     it "uses NEO4J_URI for the CLI host default and lets --host override it" do
@@ -621,6 +834,8 @@ RSpec.describe Neo4jBolt do
     relationships = []
     text.each_line do |line|
       kind, json = line.split(" ", 2)
+      next unless %w[n r].include?(kind)
+
       value = JSON.parse(json)
       kind == "n" ? nodes_by_id[value["id"]] = value : relationships << value
     end

@@ -53,13 +53,20 @@ class App
     # --------------------------------------------
 
     desc 'Dump database'
-    long_desc 'Dump all nodes and relationships.'
+    long_desc 'Dump nodes, relationships, constraints, and property indexes.'
     command :dump do |c|
         c.flag [:o, 'out-file'.to_sym], :default_value => '/dev/stdout'
         c.flag [:color], :default_value => 'cyan', :desc => 'progress accent color'
+        c.switch ['data-only'.to_sym], :default_value => false, :negatable => false,
+                 :desc => 'dump nodes and relationships only'
         c.action do |global_options, options|
             File.open(options['out-file'.to_sym], 'w') do |f|
-                dump_database(f, progress_io: $stderr, progress_color: options[:color])
+                dump_database(
+                    f,
+                    progress_io: $stderr,
+                    progress_color: options[:color],
+                    schema: !options['data-only'.to_sym]
+                )
             end
         end
     end
@@ -67,13 +74,16 @@ class App
     # --------------------------------------------
 
     desc 'Load database dump'
-    long_desc 'Load nodes and relationships from a database dump.'
+    long_desc 'Load nodes, relationships, constraints, and property indexes from a database dump.'
     command :load do |c|
         # c.flag [:i, :in_file], :desc => 'input path', :required => true
-        c.switch [:f, :force], :default_value => false, :desc => 'force appending nodes even if the database is not empty'
+        c.switch [:f, :force], :default_value => false,
+                 :desc => 'force loading into a database that already contains data or application schema'
         c.flag [:b, 'batch-size'.to_sym], :default_value => Neo4jBolt::LOAD_INITIAL_BATCH_SIZE,
                :desc => 'initial batch size; automatically reduced on transaction-memory errors'
         c.flag [:color], :default_value => 'cyan', :desc => 'progress accent color'
+        c.switch ['data-only'.to_sym], :default_value => false, :negatable => false,
+                 :desc => 'ignore constraints and indexes stored in the dump'
         c.action do |global_options, options, args|
             help_now!('input path is required') if args.empty?
             path = args.shift
@@ -83,7 +93,8 @@ class App
                     force_append: options[:force],
                     progress_io: $stderr,
                     progress_color: options[:color],
-                    initial_batch_size: options['batch-size'.to_sym]
+                    initial_batch_size: options['batch-size'.to_sym],
+                    schema: !options['data-only'.to_sym]
                 )
             end
         end
