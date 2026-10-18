@@ -544,6 +544,41 @@ RSpec.describe Neo4jBolt do
       expect(dumped.string).not_to match(/element_id|start_node_id|end_node_id/)
     end
 
+    it "round-trips dates, times, durations and points" do
+      neo4j_query(<<~CYPHER)
+        CREATE (:Typed {
+          date: date('1815-12-10'), datetime: datetime('2026-10-18T12:34:56.123456789+02:00'),
+          local_datetime: localdatetime('2026-10-18T12:34:56.5'), local_time: localtime('12:34:56.25'),
+          time: time('12:34:56+01:00'), duration: duration('P1Y2M3DT4H5M6.5S'),
+          point: point({x: 1.5, y: 2.5}), geo: point({longitude: 13.4, latitude: 52.5}),
+          point3d: point({x: 1, y: 2, z: 3}), dates: [date('2026-01-01'), date('2026-12-31')], name: 'Ada'
+        })-[:SINCE {when: date('1833-06-05')}]->(:Typed {name: 'Charles'})
+      CYPHER
+      text = "MATCH (n:Typed {name: 'Ada'})-[r]->() RETURN toString(n.date) AS date, toString(n.datetime) AS datetime, " \
+             "toString(n.local_datetime) AS local_datetime, toString(n.local_time) AS local_time, toString(n.time) AS time, " \
+             "toString(n.duration) AS duration, toString(n.point) AS point, toString(n.geo) AS geo, " \
+             "toString(n.point3d) AS point3d, [d IN n.dates | toString(d)] AS dates, toString(r.when) AS when, " \
+             "n.date = date('1815-12-10') AS typed_date, n.local_time = localtime('12:34:56.25') AS typed_time"
+      before = neo4j_query_expect_one(text)
+
+      first_dump = StringIO.new
+      dump_database(first_dump)
+      expect(first_dump.string).to include('"$neo4j":"date"', '"$neo4j":"duration"', '"$neo4j":"point"')
+      neo4j_query("MATCH (n) DETACH DELETE n")
+      load_database_dump(StringIO.new(first_dump.string))
+
+      expect(neo4j_query_expect_one(text)).to eq(before)
+      expect(before.values_at("typed_date", "typed_time")).to eq([true, true])
+      second_dump = StringIO.new
+      dump_database(second_dump)
+      expect(normalize_dump(second_dump.string)).to eq(normalize_dump(first_dump.string))
+    end
+
+    it "refuses a dump value of an unknown type" do
+      dump = %(n {"id":0,"labels":["Node"],"properties":{"x":{"$neo4j":"mystery"}}}\n)
+      expect { load_database_dump(StringIO.new(dump)) }.to raise_error(Neo4jBolt::Error, /mystery/)
+    end
+
     it "round-trips an old-format dump" do
       load_database_dump(StringIO.new(old_dump))
       first_dump = StringIO.new

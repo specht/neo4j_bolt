@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
+require "date"
 require "json"
 require "securerandom"
 require "set"
 require "thread"
+require "time"
 require "uri"
 require "neo4j/driver"
 require "neo4j_bolt/version"
@@ -20,6 +22,10 @@ module Neo4jBolt
   LOAD_PROGRESS_STEP = 5_000
   DUMP_PROGRESS_STEP = 1_000
   LOAD_ID_PROPERTY = "__neo4j_bolt_load_id"
+  # Dumps write temporal and spatial property values as maps tagged with
+  # this key. Neo4j properties are never maps, so a tagged map cannot be an
+  # ordinary value, and dumps without such values read as before.
+  DUMP_TYPE_KEY = "$neo4j"
   private_constant :LOAD_MEMORY_ERROR_CODES, :LOAD_MEMORY_GQL_STATUSES,
                    :LOAD_PROGRESS_STEP, :DUMP_PROGRESS_STEP, :LOAD_ID_PROPERTY
 
@@ -618,7 +624,7 @@ module Neo4jBolt
         "ORDER BY #{identity_function}(n)"
       ) do |row|
         dump_ids[row["identity"].to_s] = dumped_nodes if dump_ids
-        io.puts "n #{JSON.generate(id: dumped_nodes, labels: row["labels"], properties: row["properties"])}"
+        io.puts "n #{JSON.generate(id: dumped_nodes, labels: row["labels"], properties: encode_dump_properties(row["properties"]))}"
         dumped_nodes += 1
         if (dumped_nodes % DUMP_PROGRESS_STEP).zero?
           progress.update(progress_message(
@@ -638,7 +644,7 @@ module Neo4jBolt
             from: dump_ids.fetch(row["from_identity"].to_s),
             to: dump_ids.fetch(row["to_identity"].to_s),
             type: row["type"],
-            properties: row["properties"]
+            properties: encode_dump_properties(row["properties"])
           )}"
           dumped_relationships += 1
           if (dumped_relationships % DUMP_PROGRESS_STEP).zero?
@@ -1098,6 +1104,73 @@ module Neo4jBolt
     version.to_s.split(".").first.to_i >= 5 ? "elementId" : "id"
   end
 
+  # Property values for a dump: JSON values as they are; dates, times,
+  # durations and points as maps tagged with DUMP_TYPE_KEY that carry the
+  # driver's own fields (so that loading restores the exact value) and, for
+  # people reading the dump, the value as text.
+  def encode_dump_properties(properties)
+    return properties unless properties.is_a?(Hash)
+
+    properties.to_h { |key, value| [key, encode_dump_value(value)] }
+  end
+
+  def encode_dump_value(value)
+    tagged = ->(type, fields) { { DUMP_TYPE_KEY => type }.merge(fields) }
+    case value
+    when Array
+      value.map { |item| encode_dump_value(item) }
+    when Time
+      tagged.call("datetime", "value" => value.iso8601(9))
+    when DateTime
+      tagged.call("datetime", "value" => value.to_time.iso8601(9))
+    when Date
+      tagged.call("date", "value" => value.iso8601)
+    when Neo4j::Driver::Types::LocalDateTime
+      tagged.call("local_datetime", "epoch_seconds" => value.epoch_seconds, "nanoseconds" => value.nanoseconds,
+                  "value" => value.to_s)
+    when Neo4j::Driver::Types::LocalTime
+      tagged.call("local_time", "nanoseconds" => value.nanoseconds, "value" => value.to_s)
+    when Neo4j::Driver::Types::OffsetTime
+      tagged.call("time", "nanoseconds" => value.nanoseconds, "tz_offset_seconds" => value.tz_offset_seconds,
+                  "value" => value.to_s)
+    when Neo4j::Driver::Types::Duration
+      tagged.call("duration", "months" => value.months, "days" => value.days, "seconds" => value.seconds,
+                  "nanoseconds" => value.nanoseconds, "value" => value.to_s)
+    when Neo4j::Driver::Types::Point
+      tagged.call("point", { "srid" => value.srid, "x" => value.x, "y" => value.y, "z" => value.z }.compact)
+    else
+      value
+    end
+  end
+
+  def decode_dump_properties(properties)
+    return properties unless properties.is_a?(Hash)
+
+    properties.to_h { |key, value| [key, decode_dump_value(value)] }
+  end
+
+  def decode_dump_value(value)
+    return value.map { |item| decode_dump_value(item) } if value.is_a?(Array)
+    return value unless value.is_a?(Hash) && value.key?(DUMP_TYPE_KEY)
+
+    case value[DUMP_TYPE_KEY]
+    when "datetime" then Time.iso8601(value.fetch("value"))
+    when "date" then Date.iso8601(value.fetch("value"))
+    when "local_datetime"
+      Neo4j::Driver::Types::LocalDateTime.new(value.fetch("epoch_seconds"), value.fetch("nanoseconds"))
+    when "local_time" then Neo4j::Driver::Types::LocalTime.new(value.fetch("nanoseconds"))
+    when "time" then Neo4j::Driver::Types::OffsetTime.new(value.fetch("nanoseconds"), value.fetch("tz_offset_seconds"))
+    when "duration"
+      Neo4j::Driver::Types::Duration.new(value.fetch("months"), value.fetch("days"), value.fetch("seconds"),
+                                         value.fetch("nanoseconds"))
+    when "point"
+      Neo4j::Driver::Types::Point.new(srid: value.fetch("srid"), x: value.fetch("x"), y: value.fetch("y"),
+                                      z: value["z"])
+    else
+      raise Error, "Unknown value type in dump: #{value[DUMP_TYPE_KEY].inspect}"
+    end
+  end
+
   def parse_dump(io, node_batches, relationship_batches, progress = nil)
     node_count = 0
     relationship_count = 0
@@ -1116,10 +1189,12 @@ module Neo4jBolt
       value = JSON.parse(json)
       case kind
       when "n"
+        value["properties"] = decode_dump_properties(value["properties"])
         labels = value.fetch("labels")
         node_batches[labels.sort] << value
         node_count += 1
       when "r"
+        value["properties"] = decode_dump_properties(value["properties"])
         relationship_batches[value.fetch("type")] << value
         relationship_count += 1
       else
