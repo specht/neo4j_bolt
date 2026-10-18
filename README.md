@@ -4,14 +4,14 @@ Neo4jBolt 0.4 is a small compatibility and convenience layer for Ruby applicatio
 
 Neo4jBolt no longer implements the Bolt wire protocol itself.
 
-`0.5.0` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
+`0.5.1` requires Ruby 3.4 or newer and pins `neo4j-ruby-driver` to `6.2.1.beta.4`. Applications on older Rubies can remain on the Neo4jBolt 0.3.x line; this prerelease is intentionally not an automatic upgrade for them.
 
 ## Installation
 
 For this prerelease, specify the version explicitly:
 
 ```ruby
-gem "neo4j_bolt", "0.5.0"
+gem "neo4j_bolt", "0.5.1"
 ```
 
 Then run `bundle install`. A running Neo4j database is required.
@@ -259,7 +259,7 @@ The complete integration suite is run against both Community and Enterprise for 
 - `neo4j:2026.06.0-community`
 - `neo4j:2026.06.0-enterprise`
 
-No compatibility beyond this matrix is claimed for `0.5.0`.
+No compatibility beyond this matrix is claimed for `0.5.1`.
 
 Enterprise test containers are started with `NEO4J_ACCEPT_LICENSE_AGREEMENT=yes`. The Community targets verify that Community-compatible features remain portable; the Enterprise targets additionally exercise successful node-key dump/load instead of merely observing that Community rejects node keys.
 
@@ -298,6 +298,10 @@ To point RSpec itself at an already disposable database, set `NEO4J_BOLT_TEST_HO
 | Element identity and modern values | Additive behavior |
 | CLI commands | Preserved |
 | `BoltSocket`, `BoltBuffer`, protocol markers/state/parser/packer | Intentionally removed private implementation details |
+
+## 0.5.1
+
+- Dumps keep dates, datetimes, local datetimes, local times, times, durations and points; before, they were written as text and came back as strings. Older dumps load as before.
 
 ## 0.5.0 migration notes
 
